@@ -227,9 +227,10 @@ def detect_trend_state(df_micro, df_macro, vol_recent, vol_older):
             'vol_trend': vol_trend
         }
     
-    # 3. REVERSING: Both timeframes weak, OR increasing volume opposite direction
-    if ((macro_adx_current < 20 and micro_adx_current < 20) or 
-        (micro_adx_current < 20 and vol_trend == "INCREASING")):
+    # 3. REVERSING: STRICTER CRITERIA - Both timeframes weak AND ADX falling
+    # OLD (too aggressive): micro < 20 + vol increasing
+    # NEW (strict): BOTH ADX < 20 AND ADX momentum negative
+    if (macro_adx_current < 20 and micro_adx_current < 20 and adx_momentum < -2):
         return {
             'state': 'REVERSING',
             'icon': '⚠️',
@@ -239,7 +240,7 @@ def detect_trend_state(df_micro, df_macro, vol_recent, vol_older):
             'vol_trend': vol_trend
         }
     
-    # 4. UNCERTAIN: Mixed signals
+    # 4. UNCERTAIN: Mixed signals (previously was REVERSING territory)
     return {
         'state': 'UNCERTAIN',
         'icon': '🤔',
@@ -733,17 +734,37 @@ def process_pair(symbol, btc_context_str, global_sentiment):
         # --- EXIT ANTICIPADO: Check for Confirmed Trend Reversal ---
         # Only applies to TRENDING positions
         if pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "REVERSING":
-            entry_regime_adx = pos.get('regime_at_entry', {}).get('adx', 0)
-            logger.warning(f"🚨 TREND REVERSAL DETECTED for {symbol}")
-            logger.warning(f"   Strategy: {pos['strategy_used']} | Entry ADX: {entry_regime_adx:.1f} → Current Micro: {trend_state_info['micro_adx']:.1f}")
-            logger.warning(f"   Macro ADX: {trend_state_info['macro_adx']:.1f} | Volume Trend: {trend_state_info['vol_trend']}")
-            logger.warning(f"   📉 FORCING EXIT to preserve capital (trend is dying)")
+            # Initialize reversal tracker if first time
+            if 'reversal_start' not in pos:
+                pos['reversal_start'] = datetime.now().isoformat()
+                pos['reversal_candles'] = 0
+                logger.warning(f"⚠️ {symbol} entering REVERSING state (not confirmed yet)")
             
-            decision = "SELL" if pos_type == "LONG" else "BUY"
-            reason = f"TREND REVERSAL (State: {trend_state_info['state']}, Macro ADX: {trend_state_info['macro_adx']:.1f}, Vol: {trend_state_info['vol_trend']})"
-            tools.send_telegram_message(f"⚠️ **TREND REVERSAL EXIT**\n{symbol} {pos_type}\nReason: {reason}")
+            pos['reversal_candles'] = pos.get('reversal_candles', 0) + 1
+            
+            # PATIENCE: Wait 3 candles (45 min) to confirm reversal
+            if pos['reversal_candles'] >= 3:
+                entry_regime_adx = pos.get('regime_at_entry', {}).get('adx', 0)
+                logger.warning(f"🚨 CONFIRMED TREND REVERSAL for {symbol} (3+ candles)")
+                logger.warning(f"   Strategy: {pos['strategy_used']} | Entry ADX: {entry_regime_adx:.1f} → Current Micro: {trend_state_info['micro_adx']:.1f}")
+                logger.warning(f"   Macro ADX: {trend_state_info['macro_adx']:.1f} | Volume Trend: {trend_state_info['vol_trend']}")
+                logger.warning(f"   📉 FORCING EXIT to preserve capital (reversal confirmed)")
+                
+                decision = "SELL" if pos_type == "LONG" else "BUY"
+                reason = f"TREND REVERSAL CONFIRMED (State: {trend_state_info['state']}, {pos['reversal_candles']} candles, Macro ADX: {trend_state_info['macro_adx']:.1f})"
+                tools.send_telegram_message(f"⚠️ **TREND REVERSAL EXIT**\n{symbol} {pos_type}\nReason: {reason}")
+            else:
+                logger.info(f"⚠️ {symbol} REVERSING {pos['reversal_candles']}/3 candles, being cautious...")
         
-        elif pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "CONSOLIDATING":
+        elif pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] != "REVERSING":
+            # Trend recovered, clear reversal tracker
+            if 'reversal_start' in pos:
+                logger.info(f"✅ {symbol} trend state improved to {trend_state_info['state']}, clearing reversal tracker")
+                pos.pop('reversal_start', None)
+                pos.pop('reversal_candles', None)
+        
+        # --- CONSOLIDATION MANAGEMENT ---
+        if pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "CONSOLIDATING":
             # Initialize consolidation tracker
             if 'consolidation_start' not in pos:
                 pos['consolidation_start'] = datetime.now().isoformat()
