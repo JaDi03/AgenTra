@@ -14,8 +14,8 @@ import re
 from datetime import datetime
 
 # PATH TO MEMORY ARTIFACT
-BRAIN_DIR = r"C:\Users\USER\.gemini\antigravity\brain\051909d5-8fdc-4ae9-a167-2ad40a4c2163"
-LESSONS_FILE = os.path.join(BRAIN_DIR, "lessons.md")
+# Moved to project folder for visibility
+LESSONS_FILE = r"C:\Users\USER\AgenTra\lessons.md"
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,8 @@ def record_lesson(symbol, result, reason):
     Called by main.py after a trade closes.
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        from datetime import timezone, timedelta
+        timestamp = datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M")
         lesson_entry = f"- [{timestamp}] {symbol} ({result}): {reason}\n"
         
         with open(LESSONS_FILE, "a", encoding='utf-8') as f:

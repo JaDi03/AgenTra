@@ -10,7 +10,7 @@ import logging
 import time
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # Import modules
@@ -533,7 +533,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "type": "LONG",
                     "entry_price": current_price,
                     "quantity": size,
-                    "entry_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "entry_time": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6"),
                     "stop_loss": stop_loss_price,
                     "initial_stop_loss": stop_loss_price, # SAVE ORIGINAL
                     "take_profit": take_profit_price,
@@ -541,7 +541,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "regime_at_entry": regime_data,
                     "strategy_used": regime_type, # TAG FOR META-LEARNER
                     "current_price": current_price,
-                    "last_update": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    "last_update": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6")
                 }
                 state['current_positions'].append(entry)
                 msg = f"[LONG] **OPEN LONG** {symbol}\nPrice: {current_price}\nSize: {size:.4f} (Conf: {confidence})\nSL: {stop_loss_price}"
@@ -556,7 +556,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "type": "SHORT",
                     "entry_price": current_price,
                     "quantity": size,
-                    "entry_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "entry_time": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6"),
                     "stop_loss": stop_loss_price,
                     "initial_stop_loss": stop_loss_price, # SAVE ORIGINAL
                     "take_profit": take_profit_price,
@@ -564,7 +564,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "regime_at_entry": regime_data,
                     "strategy_used": regime_type, # TAG FOR META-LEARNER
                     "current_price": current_price,
-                    "last_update": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    "last_update": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6")
                 }
                 state['current_positions'].append(entry)
                 msg = f"[SHORT] **OPEN SHORT** {symbol}\nPrice: {current_price}\nSize: {size:.4f} (Conf: {confidence})\nSL: {stop_loss_price}"

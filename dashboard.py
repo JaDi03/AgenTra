@@ -119,49 +119,135 @@ if state:
                 
                 # Position Card
                 with st.container():
-                    col_info, col_btn = st.columns([4, 1])
+                    # Calculate metric values before expander
+                    current_sl = float(pos.get('stop_loss', 0))
+                    initial_sl = float(pos.get('initial_stop_loss', current_sl))
+                    tp_price = float(pos.get('take_profit', 0))
+                    sl_moved = abs(current_sl - initial_sl) > 0.01
                     
-                    with col_info:
-                        st.markdown(f"### {emoji} {pos['entry_time'][:16]} | {symbol} {pos_type} | PnL: ${unrealized_pnl:.2f} ({pnl_pct:.2f}%)")
-                        
-                        col_a, col_b = st.columns(2)
+                    # Main Label for Expander
+                    label = f"{emoji} {symbol} {pos_type} | PnL: ${unrealized_pnl:.2f} ({pnl_pct:.2f}%)"
+                    
+                    with st.expander(label, expanded=True):
+                        # Metrics Row (compact)
+                        col_a, col_b, col_c = st.columns(3)
                         with col_a:
-                            st.metric("Entry Price", f"${entry_price:.5f}")
-                            st.metric("Size", f"{quantity:.4f}")
+                            st.markdown(f"<p style='font-size:12px; margin:0;'>Entry</p><p style='font-size:16px; font-weight:bold; margin:0;'>${entry_price:.2f}</p>", unsafe_allow_html=True)
+                            st.markdown(f"<p style='font-size:12px; margin:0;'>Size</p><p style='font-size:16px; font-weight:bold; margin:0;'>{quantity:.4f}</p>", unsafe_allow_html=True)
                         with col_b:
-                            # Show both original and current SL
-                            current_sl = float(pos.get('stop_loss', 0))
-                            initial_sl = float(pos.get('initial_stop_loss', current_sl))  # Fallback to current if not saved
-                            
-                            sl_moved = abs(current_sl - initial_sl) > 0.01  # Check if SL has been adjusted
-                            
+                            # Current SL
                             if sl_moved:
-                                sl_display = f"${current_sl:.5f} (Orig: ${initial_sl:.5f})"
-                                sl_delta = f"{current_sl - initial_sl:+.2f}"
+                                sl_delta_val = current_sl - initial_sl
+                                delta_color = "green" if (pos_type == "SHORT" and sl_delta_val < 0) or (pos_type == "LONG" and sl_delta_val > 0) else "red"
+                                st.markdown(f"<p style='font-size:12px; margin:0;'>Current SL</p><p style='font-size:16px; font-weight:bold; margin:0; color:{delta_color};'>${current_sl:.2f} ({sl_delta_val:+.2f})</p>", unsafe_allow_html=True)
+                                st.markdown(f"<p style='font-size:10px; color:gray; margin:0;'>Original: ${initial_sl:.2f}</p>", unsafe_allow_html=True)
                             else:
-                                sl_display = f"${current_sl:.5f}"
-                                sl_delta = None
-                            
-                            st.metric("Stop Loss", sl_display, delta=sl_delta)
-                            st.metric("Take Profit", f"${float(pos.get('take_profit', 0)):.5f}")
+                                st.markdown(f"<p style='font-size:12px; margin:0;'>Stop Loss</p><p style='font-size:16px; font-weight:bold; margin:0;'>${current_sl:.2f}</p>", unsafe_allow_html=True)
+                        with col_c:
+                            st.markdown(f"<p style='font-size:12px; margin:0;'>Take Profit</p><p style='font-size:16px; font-weight:bold; margin:0;'>${tp_price:.2f}</p>", unsafe_allow_html=True)
                         
-                        # Entry Reason
-                        with st.expander("📋 Full Entry Time: " + pos.get('entry_time', 'N/A')):
-                            st.text("Reason:")
-                            st.write(pos.get('reason', 'No specific reason logged.'))
-                    
-                    st.divider()
-                    # --- MANUAL CLOSE BUTTON (INSIDE CARD) ---
-                    safe_symbol = symbol.replace('/', '_')
-                    # USE ABSOLUTE PATH to ensure Main.py sees it
-                    req_path = os.path.join(r"C:\Users\USER\AgenTra", f"CLOSE_{safe_symbol}.req")
-                    
-                    if st.button(f"⛔ CLOSE {symbol}", key=f"btn_close_{i}", type="primary"):
-                        with open(req_path, "w") as f:
-                            f.write("FORCE_CLOSE")
-                        st.warning(f"Sending CLOSE signal for {symbol}...")
-                        time.sleep(1) # Visual feedback
-                        st.rerun()
+                        st.divider()
+                        
+                        # Chart with Entry/SL/TP markers
+                        try:
+                            import plotly.graph_objects as go
+                            
+                            # Create price levels for visualization
+                            levels = [entry_price, current_sl, tp_price]
+                            if sl_moved:
+                                levels.append(initial_sl)
+                            
+                            min_price = min(levels) * 0.995
+                            max_price = max(levels) * 1.005
+                            
+                            fig = go.Figure()
+                            
+                            # Current Price line (dynamic)
+                            fig.add_trace(go.Scatter(
+                                x=[0, 1],
+                                y=[current_price_val, current_price_val],
+                                mode='lines',
+                                name='Current Price',
+                                line=dict(color='white', width=2, dash='dot')
+                            ))
+                            
+                            # Entry Price
+                            fig.add_trace(go.Scatter(
+                                x=[0, 1],
+                                y=[entry_price, entry_price],
+                                mode='lines+text',
+                                name='Entry',
+                                line=dict(color='blue', width=2),
+                                text=['', f'Entry: ${entry_price:.2f}'],
+                                textposition='middle right'
+                            ))
+                            
+                            # Stop Loss levels
+                            if sl_moved:
+                                # Original SL (faded)
+                                fig.add_trace(go.Scatter(
+                                    x=[0, 1],
+                                    y=[initial_sl, initial_sl],
+                                    mode='lines+text',
+                                    name='SL Original',
+                                    line=dict(color='red', width=1, dash='dash'),
+                                    text=['', f'SL1: ${initial_sl:.2f}'],
+                                    textposition='middle right'
+                                ))
+                            
+                            # Current SL
+                            fig.add_trace(go.Scatter(
+                                x=[0, 1],
+                                y=[current_sl, current_sl],
+                                mode='lines+text',
+                                name='SL Current',
+                                line=dict(color='red', width=2),
+                                text=['', f'SL: ${current_sl:.2f}'],
+                                textposition='middle right'
+                            ))
+                            
+                            # Take Profit
+                            fig.add_trace(go.Scatter(
+                                x=[0, 1],
+                                y=[tp_price, tp_price],
+                                mode='lines+text',
+                                name='Take Profit',
+                                line=dict(color='green', width=2),
+                                text=['', f'TP: ${tp_price:.2f}'],
+                                textposition='middle right'
+                            ))
+                            
+                            fig.update_layout(
+                                height=250,
+                                margin=dict(l=0, r=100, t=20, b=0),
+                                xaxis=dict(visible=False),
+                                yaxis=dict(range=[min_price, max_price], title='Price'),
+                                showlegend=False,
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                plot_bgcolor='rgba(0,0,0,0)',
+                            )
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                        except ImportError:
+                            st.warning("Install plotly for chart visualization: `pip install plotly`")
+                        
+                        st.divider()
+                        st.markdown(f"<p style='font-size:12px;'><b>Entry Time (UTC-6):</b> {pos.get('entry_time', 'N/A')}</p>", unsafe_allow_html=True)
+                        st.markdown("**Reason:**")
+                        st.info(pos.get('reason', 'No specific reason logged.'))
+                        
+                        st.divider()
+                        # --- MANUAL CLOSE BUTTON (INSIDE EXPANDER) ---
+                        safe_symbol = symbol.replace('/', '_')
+                        req_path = os.path.join(r"C:\Users\USER\AgenTra", f"CLOSE_{safe_symbol}.req")
+                        
+                        if st.button(f"⛔ CLOSE {symbol}", key=f"btn_close_{i}", type="primary", use_container_width=True):
+                            with open(req_path, "w") as f:
+                                f.write("FORCE_CLOSE")
+                            st.warning(f"Sending CLOSE signal for {symbol}...")
+                            time.sleep(1)
+                            st.rerun()
+                st.divider()
 
         else:
             st.info("No active positions. Waiting for setup...")
