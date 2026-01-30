@@ -665,6 +665,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     reason = "TAKE PROFIT HIT (LIVE/WICK)"
                     
             elif pos_type == "SHORT":
+                # 1. BREAK EVEN (Move SL to Entry when profit reaches threshold)
                 # Use be_trigger (Dynamic 50% TP or ATR) instead of fixed ATR
                 if real_price < (entry_price - be_trigger) and current_sl > entry_price:
                     logger.info(f"Moving SL to Break Even for {symbol}")
@@ -672,12 +673,22 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     current_sl = entry_price
                     tools.send_telegram_message(f"🛡️ **BREAK EVEN** {symbol}\nStop moved to Entry: {entry_price}")
 
-                # 2. Trailing (Drag SL down at final_dist)
+                # 2. Trailing (Drag SL DOWN following price, but NEVER below entry unless in BE mode)
                 new_sl = real_price + final_dist
+                
+                # CRITICAL: For SHORT, SL should only trail down if:
+                # - New SL is lower than current SL (trailing down) AND
+                # - New SL is still ABOVE entry (unless already in BE mode where SL = entry)
                 if new_sl < current_sl:
-                    logger.info(f"Trailing SL Down for {symbol} to {new_sl:.2f} (Dist: {final_dist:.4f})")
-                    pos['stop_loss'] = new_sl
-                    current_sl = new_sl
+                    # Safety: Don't trail below entry unless we're already in BE mode
+                    if current_sl > entry_price and new_sl < entry_price:
+                        # Don't trail past entry, stay at entry for now
+                        # (BE logic above will handle moving to entry when profit threshold is hit)
+                        logger.info(f"Trailing SL would go below entry ({new_sl:.2f} < {entry_price:.2f}), holding at current {current_sl:.2f}")
+                    else:
+                        logger.info(f"Trailing SL Down for {symbol} to {new_sl:.2f} (Dist: {final_dist:.4f})")
+                        pos['stop_loss'] = new_sl
+                        current_sl = new_sl
                     
                 # 3. STOP HIT CHECK
                 if real_price >= current_sl: # Check Live Price vs SL
