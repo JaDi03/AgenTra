@@ -693,3 +693,229 @@ def write_state(state: dict, path: str = 'state.json') -> bool:
     except Exception as e:
         logger.error(f"Error writing state: {e}")
         return False
+
+
+# =============================================================================
+# MARKET STRUCTURE FUNCTIONS (BOS, CHoCH, S/R)
+# =============================================================================
+
+def detect_swing_points(df: pd.DataFrame, lookback: int = 5) -> tuple:
+    """
+    Detects Swing Highs and Swing Lows using fractal method.
+    A Swing High requires 'lookback' candles with lower highs on each side.
+    A Swing Low requires 'lookback' candles with higher lows on each side.
+    
+    Returns: (swing_highs, swing_lows) - Lists of dicts with index, price, timestamp
+    """
+    swing_highs = []
+    swing_lows = []
+    
+    if len(df) < (lookback * 2 + 1):
+        logger.warning(f"Not enough data for swing detection. Need {lookback * 2 + 1}, got {len(df)}")
+        return swing_highs, swing_lows
+    
+    for i in range(lookback, len(df) - lookback):
+        # Get the window of candles around position i
+        window = df.iloc[i - lookback : i + lookback + 1]
+        current_high = df.iloc[i]['high']
+        current_low = df.iloc[i]['low']
+        
+        # Swing High: current high is the highest in the window
+        if current_high == window['high'].max():
+            swing_highs.append({
+                'index': i,
+                'price': float(current_high),
+                'timestamp': str(df.iloc[i]['timestamp']) if 'timestamp' in df.columns else str(i)
+            })
+        
+        # Swing Low: current low is the lowest in the window
+        if current_low == window['low'].min():
+            swing_lows.append({
+                'index': i,
+                'price': float(current_low),
+                'timestamp': str(df.iloc[i]['timestamp']) if 'timestamp' in df.columns else str(i)
+            })
+    
+    logger.info(f"📊 Swing Detection: {len(swing_highs)} highs, {len(swing_lows)} lows found")
+    return swing_highs, swing_lows
+
+
+def detect_market_structure(swing_highs: list, swing_lows: list, current_price: float) -> dict:
+    """
+    Detects BOS (Break of Structure) and CHoCH (Change of Character).
+    
+    BOS: Price breaks last swing in trend direction (continuation)
+    CHoCH: Price breaks last swing AGAINST trend direction (reversal)
+    
+    Returns: {
+        'bias': 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+        'bos_detected': bool,
+        'choch_detected': bool,
+        'last_swing_high': float,
+        'last_swing_low': float,
+        'structure_valid': bool
+    }
+    """
+    result = {
+        'bias': 'NEUTRAL',
+        'bos_detected': False,
+        'choch_detected': False,
+        'last_swing_high': None,
+        'last_swing_low': None,
+        'prev_swing_high': None,
+        'prev_swing_low': None,
+        'structure_valid': False
+    }
+    
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        logger.warning("Not enough swings for structure analysis")
+        return result
+    
+    # Get last two swings for comparison
+    last_high = swing_highs[-1]['price']
+    prev_high = swing_highs[-2]['price']
+    last_low = swing_lows[-1]['price']
+    prev_low = swing_lows[-2]['price']
+    
+    result['last_swing_high'] = last_high
+    result['last_swing_low'] = last_low
+    result['prev_swing_high'] = prev_high
+    result['prev_swing_low'] = prev_low
+    result['structure_valid'] = True
+    
+    # Determine structure: HH/HL = Bullish, LH/LL = Bearish
+    higher_high = last_high > prev_high
+    higher_low = last_low > prev_low
+    lower_high = last_high < prev_high
+    lower_low = last_low < prev_low
+    
+    # Determine bias
+    if higher_high and higher_low:
+        result['bias'] = 'BULLISH'
+    elif lower_high and lower_low:
+        result['bias'] = 'BEARISH'
+    else:
+        # Mixed structure - use most recent swing direction
+        if last_high > prev_high:
+            result['bias'] = 'BULLISH'
+        elif last_low < prev_low:
+            result['bias'] = 'BEARISH'
+    
+    # BOS Detection: Break in direction of trend
+    if result['bias'] == 'BULLISH' and current_price > last_high:
+        result['bos_detected'] = True
+        logger.info(f"🔼 BOS BULLISH: Price {current_price:.2f} > Last High {last_high:.2f}")
+    elif result['bias'] == 'BEARISH' and current_price < last_low:
+        result['bos_detected'] = True
+        logger.info(f"🔽 BOS BEARISH: Price {current_price:.2f} < Last Low {last_low:.2f}")
+    
+    # CHoCH Detection: Break AGAINST trend (reversal signal)
+    if result['bias'] == 'BULLISH' and current_price < last_low:
+        result['choch_detected'] = True
+        result['bias'] = 'BEARISH'  # Bias changes
+        logger.warning(f"⚠️ CHoCH BEARISH: Price {current_price:.2f} broke below {last_low:.2f}")
+    elif result['bias'] == 'BEARISH' and current_price > last_high:
+        result['choch_detected'] = True
+        result['bias'] = 'BULLISH'  # Bias changes
+        logger.warning(f"⚠️ CHoCH BULLISH: Price {current_price:.2f} broke above {last_high:.2f}")
+    
+    logger.info(f"📈 Structure: {result['bias']} | BOS: {result['bos_detected']} | CHoCH: {result['choch_detected']}")
+    return result
+
+
+def calculate_sr_levels(df: pd.DataFrame, num_levels: int = 5, lookback: int = 3) -> dict:
+    """
+    Calculates Support and Resistance levels based on recent swing points.
+    
+    Returns: {
+        'resistances': [list of resistance prices, sorted descending],
+        'supports': [list of support prices, sorted ascending],
+        'nearest_resistance': float or None,
+        'nearest_support': float or None
+    }
+    """
+    swing_highs, swing_lows = detect_swing_points(df, lookback=lookback)
+    
+    # Get last N swing levels
+    resistances = [s['price'] for s in swing_highs[-num_levels:]] if swing_highs else []
+    supports = [s['price'] for s in swing_lows[-num_levels:]] if swing_lows else []
+    
+    # Sort: resistances descending (highest first), supports ascending (lowest first)
+    resistances = sorted(resistances, reverse=True)
+    supports = sorted(supports)
+    
+    # Get nearest to current price
+    current_price = float(df.iloc[-1]['close']) if not df.empty else 0
+    
+    # Nearest resistance: smallest value above current price
+    nearest_res = None
+    for r in sorted(resistances):
+        if r > current_price:
+            nearest_res = r
+            break
+    
+    # Nearest support: largest value below current price
+    nearest_sup = None
+    for s in sorted(supports, reverse=True):
+        if s < current_price:
+            nearest_sup = s
+            break
+    
+    result = {
+        'resistances': resistances,
+        'supports': supports,
+        'nearest_resistance': nearest_res,
+        'nearest_support': nearest_sup,
+        'current_price': current_price
+    }
+    
+    logger.info(f"📏 S/R Levels: {len(resistances)} R, {len(supports)} S | Nearest R: {nearest_res}, S: {nearest_sup}")
+    return result
+
+
+def check_proximity_to_level(price: float, levels: list, threshold_pct: float = 0.15) -> tuple:
+    """
+    Checks if price is near any S/R level.
+    
+    Args:
+        price: Current price
+        levels: List of S/R levels to check
+        threshold_pct: Maximum distance in percentage (0.15 = 0.15%)
+    
+    Returns: (is_near, nearest_level, distance_pct)
+    """
+    if not levels or price <= 0:
+        return False, None, None
+    
+    for level in levels:
+        if level <= 0:
+            continue
+        distance_pct = abs(price - level) / price * 100
+        if distance_pct <= threshold_pct:
+            logger.info(f"📍 Price {price:.2f} is {distance_pct:.3f}% from level {level:.2f}")
+            return True, level, distance_pct
+    
+    return False, None, None
+
+
+def get_structure_context_string(structure: dict, sr_levels: dict) -> str:
+    """
+    Formats market structure and S/R data for AI context.
+    """
+    bias_emoji = "🔼" if structure['bias'] == 'BULLISH' else "🔽" if structure['bias'] == 'BEARISH' else "➡️"
+    
+    context = f"""
+=== MARKET STRUCTURE (4H) ===
+Bias: {bias_emoji} {structure['bias']}
+Last Swing High: ${structure.get('last_swing_high', 0):.2f}
+Last Swing Low: ${structure.get('last_swing_low', 0):.2f}
+BOS Detected: {structure.get('bos_detected', False)}
+CHoCH Detected: {structure.get('choch_detected', False)}
+
+=== S/R LEVELS (15m) ===
+Resistances: {[f'${r:.2f}' for r in sr_levels.get('resistances', [])[:3]]}
+Supports: {[f'${s:.2f}' for s in sr_levels.get('supports', [])[:3]]}
+Nearest Resistance: ${sr_levels.get('nearest_resistance', 0):.2f if sr_levels.get('nearest_resistance') else 'N/A'}
+Nearest Support: ${sr_levels.get('nearest_support', 0):.2f if sr_levels.get('nearest_support') else 'N/A'}
+"""
+    return context

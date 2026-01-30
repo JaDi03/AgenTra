@@ -41,11 +41,15 @@ logging.basicConfig(
 logger = logging.getLogger("Main")
 
 PAIRS = [
-    # === ETH-ONLY MODE FOR TESTING ===
-    # Trading only ETH/USDT to diagnose strategy performance
-    # After 20 trades, we'll audit radiografias.md
-    'ETH/USDT'
+    # === DIVERSIFIED MODE: Low BTC Correlation ===
+    # ETH: Main pair, most liquid
+    # LINK: Oracle, lower BTC correlation
+    # AAVE: DeFi lending, independent movement
+    'ETH/USDT',
+    'LINK/USDT',
+    'AAVE/USDT'
 ]
+
 
 # === ORIGINAL PAIRS (DISABLED FOR TESTING) ===
 # PAIRS = [
@@ -401,8 +405,30 @@ def process_pair(symbol, btc_context_str, global_sentiment):
 
         # --- PASO 3: MACRO (4h) ---
         # Solo descargamos esto si pasa el filtro (Ahorro de API de Exchange y proceso)
-        df_macro = tools.fetch_market_data(symbol, TIMEFRAME_MACRO, limit=100)
+        # 252 velas = ~6 semanas de historia para BOS/CHoCH detection
+        df_macro = tools.fetch_market_data(symbol, TIMEFRAME_MACRO, limit=252)
         df_macro = tools.calculate_indicators(df_macro)
+
+        # === MARKET STRUCTURE ANALYSIS (4H) ===
+        current_price = tools.get_current_price(symbol)
+        swing_highs_4h, swing_lows_4h = tools.detect_swing_points(df_macro, lookback=5)
+        structure_4h = tools.detect_market_structure(swing_highs_4h, swing_lows_4h, current_price)
+        
+        # === S/R LEVELS (15m) ===
+        sr_levels_15m = tools.calculate_sr_levels(df_micro, num_levels=5, lookback=3)
+        near_resistance, res_level, res_dist = tools.check_proximity_to_level(
+            current_price, sr_levels_15m['resistances'], threshold_pct=0.20
+        )
+        near_support, sup_level, sup_dist = tools.check_proximity_to_level(
+            current_price, sr_levels_15m['supports'], threshold_pct=0.20
+        )
+        
+        # Log structure for debugging
+        logger.info(f"📊 {symbol} Structure 4H: {structure_4h['bias']} | BOS: {structure_4h['bos_detected']} | CHoCH: {structure_4h['choch_detected']}")
+        logger.info(f"📏 {symbol} S/R: Near R: {near_resistance} ({res_level}) | Near S: {near_support} ({sup_level})")
+        
+        # Get structure context for AI
+        structure_context_str = tools.get_structure_context_string(structure_4h, sr_levels_15m)
 
         # Prepare Contexts
         sentiment = global_sentiment
@@ -442,6 +468,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
         vol_recent = df_micro.iloc[-5:]['volume'].mean()
         vol_older = df_micro.iloc[-20:-5]['volume'].mean() if len(df_micro) >= 20 else vol_recent
         trend_state_info = detect_trend_state(df_micro, df_macro, vol_recent, vol_older)
+
         
         smc_context_str = f"--- MARKET PHYSICS (QUANT) ---\n" \
                           f"Regime: {regime_type} (Playbook: {playbook})\n" \
@@ -452,12 +479,14 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                           f"  - Micro ADX: {trend_state_info['micro_adx']:.1f} (momentum: {trend_state_info['adx_momentum']:+.1f})\n" \
                           f"  - Macro ADX: {trend_state_info['macro_adx']:.1f}\n" \
                           f"  - Volume Trend: {trend_state_info['vol_trend']} ({vol_recent:.0f} vs {vol_older:.0f})\n\n" \
+                          f"{structure_context_str}\n\n" \
                           f"--- VOLUME PROFILE (15m) ---\n" \
                           f"{vp_data['profile_str']}\n\n" \
                           f"--- SMART MONEY CONCEPTS (15m) ---\n" \
                           f"FAIR VALUE GAPS:\n{smc_data['fvg_str']}\n\n" \
                           f"LIQUIDITY POOLS (Swing Highs/Lows):\n{smc_data['liquidity_str']}\n\n" \
                           f"CANDLE PATTERNS (Vision):\n{smc_data.get('patterns_str', 'None')}"
+
 
         current_price = df_micro.iloc[-1]['close'] # Execution price is always Micro close
         
@@ -562,6 +591,44 @@ def process_pair(symbol, btc_context_str, global_sentiment):
         if confidence < 5 and decision != "HOLD":
             logger.info(f"Decision {decision} ignored due to LOW CONFIDENCE ({confidence}/10).")
             decision = "HOLD" # Force Hold
+
+        # === STRUCTURE-BASED ENTRY FILTER ===
+        # This filter ensures we only enter WITH structure (4H) and near S/R (15m)
+        structure_filter_passed = True
+        structure_filter_reason = ""
+        
+        if decision != "HOLD" and structure_4h['structure_valid']:
+            bias = structure_4h['bias']
+            
+            # Rule 1: Don't trade against the 4H structure
+            if bias == 'BEARISH' and decision == "BUY":
+                structure_filter_passed = False
+                structure_filter_reason = f"BLOCKED: 4H Structure is BEARISH, no LONG allowed"
+            elif bias == 'BULLISH' and decision == "SELL":
+                structure_filter_passed = False
+                structure_filter_reason = f"BLOCKED: 4H Structure is BULLISH, no SHORT allowed"
+            
+            # Rule 2: Require proximity to S/R for entry
+            if structure_filter_passed:
+                if decision == "SELL" and not near_resistance:
+                    structure_filter_passed = False
+                    structure_filter_reason = f"WAIT: SHORT signal but not near resistance (nearest: {res_level})"
+                elif decision == "BUY" and not near_support:
+                    structure_filter_passed = False
+                    structure_filter_reason = f"WAIT: LONG signal but not near support (nearest: {sup_level})"
+            
+            # Rule 3: If CHoCH detected, pause all entries
+            if structure_4h['choch_detected']:
+                structure_filter_passed = False
+                structure_filter_reason = f"PAUSE: CHoCH detected on 4H - waiting for structure confirmation"
+                logger.warning(f"⚠️ CHoCH DETECTED for {symbol} - Entry paused")
+            
+            if not structure_filter_passed:
+                logger.info(f"🚫 STRUCTURE FILTER: {structure_filter_reason}")
+                decision = "HOLD"
+            else:
+                logger.info(f"✅ STRUCTURE FILTER PASSED: {bias} bias, entry aligned with S/R")
+
 
         size = 0.0
         if stop_loss_price and decision != "HOLD":
