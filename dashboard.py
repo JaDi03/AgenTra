@@ -148,16 +148,16 @@ if state:
                         
                         st.divider()
                         
-                        # Real Candlestick Chart with Entry/SL/TP markers
+                        # TradingView Lightweight Charts
                         try:
-                            import plotly.graph_objects as go
-                            from plotly.subplots import make_subplots
+                            import streamlit.components.v1 as components
                             import requests
-                            from datetime import datetime, timedelta
+                            from datetime import datetime
+                            import json
                             
                             # Fetch real candlestick data from Binance
                             @st.cache_data(ttl=60)
-                            def fetch_candles(symbol_raw, limit=50):
+                            def fetch_candles(symbol_raw, limit=100):
                                 try:
                                     url = f"https://api.binance.com/api/v3/klines"
                                     params = {
@@ -168,117 +168,175 @@ if state:
                                     response = requests.get(url, params=params, timeout=5)
                                     data = response.json()
                                     
-                                    # Parse candlestick data
-                                    times = [datetime.fromtimestamp(x[0]/1000) for x in data]
-                                    opens = [float(x[1]) for x in data]
-                                    highs = [float(x[2]) for x in data]
-                                    lows = [float(x[3]) for x in data]
-                                    closes = [float(x[4]) for x in data]
+                                    # Convert to Lightweight Charts format
+                                    candles = []
+                                    for x in data:
+                                        candles.append({
+                                            'time': int(x[0]) // 1000,  # Convert to seconds
+                                            'open': float(x[1]),
+                                            'high': float(x[2]),
+                                            'low': float(x[3]),
+                                            'close': float(x[4])
+                                        })
                                     
-                                    return times, opens, highs, lows, closes
+                                    return candles
+                                except Exception as e:
+                                    st.error(f"Error fetching candles: {e}")
+                                    return None
+                            
+                            candles = fetch_candles(symbol)
+                            
+                            if candles:
+                                # Find entry time in candles to place marker
+                                entry_timestamp = pos.get('entry_time', '')
+                                try:
+                                    # Parse entry time (format: "2026-01-29 22:24:24 UTC-6")
+                                    from datetime import datetime
+                                    entry_dt = datetime.strptime(entry_timestamp.split(' UTC')[0], "%Y-%m-%d %H:%M:%S")
+                                    entry_time_unix = int(entry_dt.timestamp())
                                 except:
-                                    return None, None, None, None, None
-                            
-                            times, opens, highs, lows, closes = fetch_candles(symbol)
-                            
-                            if times is not None:
-                                fig = go.Figure()
+                                    entry_time_unix = candles[-20]['time']  # Default to 20 candles ago
                                 
-                                # Candlestick chart
-                                fig.add_trace(go.Candlestick(
-                                    x=times,
-                                    open=opens,
-                                    high=highs,
-                                    low=lows,
-                                    close=closes,
-                                    name='Price',
-                                    increasing_line_color='#26A69A',
-                                    decreasing_line_color='#EF5350'
-                                ))
+                                # Prepare data for JavaScript
+                                candles_json = json.dumps(candles)
                                 
-                                # Current Price line with label
-                                fig.add_trace(go.Scatter(
-                                    x=[times[0], times[-1]],
-                                    y=[current_price_val, current_price_val],
-                                    mode='lines+text',
-                                    name='Current',
-                                    line=dict(color='#FFD700', width=2, dash='dot'),
-                                    text=['', f'Now: ${current_price_val:.4f}'],
-                                    textposition='middle right',
-                                    textfont=dict(color='#FFD700', size=11)
-                                ))
+                                # Create marker for entry
+                                marker_color = '#2196F3' if pos_type == 'LONG' else '#F44336'
+                                marker_shape = 'arrowUp' if pos_type == 'LONG' else 'arrowDown'
+                                marker_position = 'belowBar' if pos_type == 'LONG' else 'aboveBar'
                                 
-                                # Entry Price
-                                fig.add_trace(go.Scatter(
-                                    x=[times[0], times[-1]],
-                                    y=[entry_price, entry_price],
-                                    mode='lines+text',
-                                    name='Entry',
-                                    line=dict(color='#2196F3', width=2),
-                                    text=['', f'Entry: ${entry_price:.4f}'],
-                                    textposition='middle right',
-                                    textfont=dict(color='#2196F3', size=10)
-                                ))
+                                markers_json = json.dumps([{
+                                    'time': entry_time_unix,
+                                    'position': marker_position,
+                                    'color': marker_color,
+                                    'shape': marker_shape,
+                                    'text': f'{pos_type} @ ${entry_price:.4f}'
+                                }])
                                 
-                                # Stop Loss levels
-                                if sl_moved:
-                                    # Original SL (faded)
-                                    fig.add_trace(go.Scatter(
-                                        x=[times[0], times[-1]],
-                                        y=[initial_sl, initial_sl],
-                                        mode='lines+text',
-                                        name='SL Initial',
-                                        line=dict(color='#EF5350', width=1, dash='dash'),
-                                        text=['', f'SL1: ${initial_sl:.4f}'],
-                                        textposition='middle right',
-                                        textfont=dict(color='#EF5350', size=9)
-                                    ))
+                                # HTML component with Lightweight Charts
+                                chart_html = f"""
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+                                    <style>
+                                        body {{ margin: 0; padding: 0; background: #131722; }}
+                                        #chart {{ width: 100%; height: 400px; }}
+                                    </style>
+                                </head>
+                                <body>
+                                    <div id="chart"></div>
+                                    <script>
+                                        const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
+                                            width: document.getElementById('chart').clientWidth,
+                                            height: 400,
+                                            layout: {{
+                                                background: {{ color: '#131722' }},
+                                                textColor: '#d1d4dc',
+                                            }},
+                                            grid: {{
+                                                vertLines: {{ color: '#1e222d' }},
+                                                horzLines: {{ color: '#1e222d' }},
+                                            }},
+                                            crosshair: {{
+                                                mode: LightweightCharts.CrosshairMode.Normal,
+                                            }},
+                                            rightPriceScale: {{
+                                                borderColor: '#2b2b43',
+                                            }},
+                                            timeScale: {{
+                                                borderColor: '#2b2b43',
+                                                timeVisible: true,
+                                                secondsVisible: false,
+                                            }},
+                                        }});
+
+                                        const candlestickSeries = chart.addCandlestickSeries({{
+                                            upColor: '#26a69a',
+                                            downColor: '#ef5350',
+                                            borderVisible: false,
+                                            wickUpColor: '#26a69a',
+                                            wickDownColor: '#ef5350',
+                                        }});
+
+                                        // Set candle data
+                                        const candles = {candles_json};
+                                        candlestickSeries.setData(candles);
+
+                                        // Add entry marker
+                                        const markers = {markers_json};
+                                        candlestickSeries.setMarkers(markers);
+
+                                        // Add price lines
+                                        // Original SL (if moved)
+                                        {f'''
+                                        const slOriginal = candlestickSeries.createPriceLine({{
+                                            price: {initial_sl},
+                                            color: '#ef5350',
+                                            lineWidth: 1,
+                                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                                            axisLabelVisible: true,
+                                            title: 'SL1 (Orig)',
+                                        }});
+                                        ''' if sl_moved else ''}
+
+                                        // Current SL
+                                        const slCurrent = candlestickSeries.createPriceLine({{
+                                            price: {current_sl},
+                                            color: '#f44336',
+                                            lineWidth: 2,
+                                            lineStyle: LightweightCharts.LineStyle.Solid,
+                                            axisLabelVisible: true,
+                                            title: 'SL',
+                                        }});
+
+                                        // Entry line
+                                        const entryLine = candlestickSeries.createPriceLine({{
+                                            price: {entry_price},
+                                            color: '#2196f3',
+                                            lineWidth: 2,
+                                            lineStyle: LightweightCharts.LineStyle.Solid,
+                                            axisLabelVisible: true,
+                                            title: 'Entry',
+                                        }});
+
+                                        // Take Profit
+                                        const tpLine = candlestickSeries.createPriceLine({{
+                                            price: {tp_price},
+                                            color: '#4caf50',
+                                            lineWidth: 2,
+                                            lineStyle: LightweightCharts.LineStyle.Solid,
+                                            axisLabelVisible: true,
+                                            title: 'TP',
+                                        }});
+
+                                        // Current Price (dynamic)
+                                        const currentPrice = candlestickSeries.createPriceLine({{
+                                            price: {current_price_val},
+                                            color: '#ffd700',
+                                            lineWidth: 2,
+                                            lineStyle: LightweightCharts.LineStyle.Dotted,
+                                            axisLabelVisible: true,
+                                            title: 'Now: ${current_price_val:.4f}',
+                                        }});
+
+                                        // Auto-resize
+                                        window.addEventListener('resize', () => {{
+                                            chart.applyOptions({{ width: document.getElementById('chart').clientWidth }});
+                                        }});
+
+                                        // Fit content
+                                        chart.timeScale().fitContent();
+                                    </script>
+                                </body>
+                                </html>
+                                """
                                 
-                                # Current SL
-                                fig.add_trace(go.Scatter(
-                                    x=[times[0], times[-1]],
-                                    y=[current_sl, current_sl],
-                                    mode='lines+text',
-                                    name='SL',
-                                    line=dict(color='#F44336', width=2),
-                                    text=['', f'SL: ${current_sl:.4f}'],
-                                    textposition='middle right',
-                                    textfont=dict(color='#F44336', size=10)
-                                ))
-                                
-                                # Take Profit
-                                fig.add_trace(go.Scatter(
-                                    x=[times[0], times[-1]],
-                                    y=[tp_price, tp_price],
-                                    mode='lines+text',
-                                    name='TP',
-                                    line=dict(color='#4CAF50', width=2),
-                                    text=['', f'TP: ${tp_price:.4f}'],
-                                    textposition='middle right',
-                                    textfont=dict(color='#4CAF50', size=10)
-                                ))
-                                
-                                fig.update_layout(
-                                    height=350,
-                                    margin=dict(l=0, r=100, t=10, b=0),
-                                    xaxis=dict(
-                                        rangeslider=dict(visible=False),
-                                        type='date'
-                                    ),
-                                    yaxis=dict(title='Price (USDT)'),
-                                    showlegend=False,
-                                    paper_bgcolor='rgba(0,0,0,0)',
-                                    plot_bgcolor='rgba(17,17,17,1)',
-                                    font=dict(color='white'),
-                                    hovermode='x unified'
-                                )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
+                                # Render the chart
+                                components.html(chart_html, height=420)
                             else:
-                                st.warning("Could not fetch chart data from Binance")
+                                st.warning("Could not load chart data from Binance")
                                 
-                        except ImportError:
-                            st.warning("Install plotly for chart visualization: `pip install plotly`")
                         except Exception as e:
                             st.error(f"Chart error: {e}")
                         
