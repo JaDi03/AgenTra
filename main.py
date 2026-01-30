@@ -41,12 +41,87 @@ logging.basicConfig(
 logger = logging.getLogger("Main")
 
 PAIRS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT',
-    'DOGE/USDT', 'FET/USDT', 'WIF/USDT',
-    'APT/USDT', 'AVAX/USDT', 'ENA/USDT', 'XRP/USDT', 'SUI/USDT', 'NEAR/USDT'
+    # === ETH-ONLY MODE FOR TESTING ===
+    # Trading only ETH/USDT to diagnose strategy performance
+    # After 20 trades, we'll audit radiografias.md
+    'ETH/USDT'
 ]
+
+# === ORIGINAL PAIRS (DISABLED FOR TESTING) ===
+# PAIRS = [
+#     'BTC/USDT', 'ETH/USDT', 'SOL/USDT',
+#     'DOGE/USDT', 'FET/USDT', 'WIF/USDT',
+#     'APT/USDT', 'AVAX/USDT', 'ENA/USDT', 'XRP/USDT', 'SUI/USDT', 'NEAR/USDT'
+# ]
+
 TIMEFRAME_MICRO = '15m'
 TIMEFRAME_MACRO = '4h'
+
+# === RADIOGRAPHY LOGGING ===
+RADIOGRAPHY_FILE = r"C:\Users\USER\AgenTra\radiografias.md"
+
+def log_radiography(event_type, data):
+    """
+    Logs trading events to radiografias.md for detailed audit.
+    event_type: 'ENTRY', 'SL_MOVE', 'EXIT'
+    """
+    import os
+    from datetime import datetime, timezone, timedelta
+    
+    utc_minus_6 = timezone(timedelta(hours=-6))
+    now = datetime.now(utc_minus_6).strftime("%Y-%m-%d %H:%M:%S")
+    
+    try:
+        with open(RADIOGRAPHY_FILE, 'a', encoding='utf-8') as f:
+            if event_type == 'ENTRY':
+                entry_text = f"""
+---
+
+## 🎯 Operación #{data.get('trade_num', '?')}
+
+**Estado:** 🟢 Activa
+
+| Campo | Valor |
+|-------|-------|
+| **Fecha/Hora Entrada** | {now} |
+| **Tipo** | {data.get('type', '-')} |
+| **Precio Entrada** | ${data.get('entry_price', 0):.4f} |
+| **SL Inicial** | ${data.get('sl', 0):.4f} |
+| **TP** | ${data.get('tp', 0):.4f} |
+| **Razón de Entrada** | {data.get('reason', '-')[:100]}... |
+
+### 📈 Movimientos del SL
+
+| Timestamp | Precio Actual | SL Anterior | SL Nuevo | Profit (%) |
+|-----------|---------------|-------------|----------|------------|
+"""
+                f.write(entry_text)
+                
+            elif event_type == 'SL_MOVE':
+                sl_text = f"| {now} | ${data.get('price', 0):.4f} | ${data.get('old_sl', 0):.4f} | ${data.get('new_sl', 0):.4f} | {data.get('profit_pct', 0):.2f}% |\n"
+                f.write(sl_text)
+                
+            elif event_type == 'EXIT':
+                exit_text = f"""
+
+### 📤 Salida
+
+| Campo | Valor |
+|-------|-------|
+| **Fecha/Hora Salida** | {now} |
+| **Precio Salida** | ${data.get('exit_price', 0):.4f} |
+| **Motivo de Salida** | {data.get('reason', '-')} |
+| **PnL ($)** | ${data.get('pnl', 0):.2f} |
+| **PnL (%)** | {data.get('pnl_pct', 0):.2f}% |
+
+---
+"""
+                f.write(exit_text)
+                
+        logger.info(f"📝 Radiography logged: {event_type}")
+    except Exception as e:
+        logger.error(f"Error logging radiography: {e}")
+
 
 def check_gatekeeper(df):
     """
@@ -528,6 +603,9 @@ def process_pair(symbol, btc_context_str, global_sentiment):
             
         if decision == "BUY":
             if size > 0:
+                # Count existing trades for numbering
+                trade_num = len(state.get('trade_history', [])) + 1
+                
                 entry = {
                     "symbol": symbol,
                     "type": "LONG",
@@ -544,13 +622,28 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "last_update": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6")
                 }
                 state['current_positions'].append(entry)
+                
+                # LOG TO RADIOGRAPHY
+                log_radiography('ENTRY', {
+                    'trade_num': trade_num,
+                    'type': 'LONG',
+                    'entry_price': current_price,
+                    'sl': stop_loss_price,
+                    'tp': take_profit_price,
+                    'reason': decision_packet.get("reason", "-")
+                })
+                
                 msg = f"[LONG] **OPEN LONG** {symbol}\nPrice: {current_price}\nSize: {size:.4f} (Conf: {confidence})\nSL: {stop_loss_price}"
                 logger.info(msg)
                 tools.send_telegram_message(msg)
                 trade_executed = True
+
                 
         elif decision == "SELL":
              if size > 0:
+                # Count existing trades for numbering
+                trade_num = len(state.get('trade_history', [])) + 1
+                
                 entry = {
                     "symbol": symbol,
                     "type": "SHORT",
@@ -567,10 +660,22 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     "last_update": datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d %H:%M:%S UTC-6")
                 }
                 state['current_positions'].append(entry)
+                
+                # LOG TO RADIOGRAPHY
+                log_radiography('ENTRY', {
+                    'trade_num': trade_num,
+                    'type': 'SHORT',
+                    'entry_price': current_price,
+                    'sl': stop_loss_price,
+                    'tp': take_profit_price,
+                    'reason': decision_packet.get("reason", "-")
+                })
+                
                 msg = f"[SHORT] **OPEN SHORT** {symbol}\nPrice: {current_price}\nSize: {size:.4f} (Conf: {confidence})\nSL: {stop_loss_price}"
                 logger.info(msg)
                 tools.send_telegram_message(msg)
                 trade_executed = True
+
 
     else:
         # EXISTING POSITION
@@ -658,9 +763,17 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     logger.info(f"📈 Trailing SL Up for {symbol}: {old_sl:.4f} → {new_sl:.4f} (Dist: {final_dist:.4f})")
                     pos['stop_loss'] = new_sl
                     current_sl = new_sl
+                    # LOG TO RADIOGRAPHY
+                    log_radiography('SL_MOVE', {
+                        'price': real_price,
+                        'old_sl': old_sl,
+                        'new_sl': new_sl,
+                        'profit_pct': profit_pct
+                    })
                     # Notify on significant moves (every 0.1% or more)
                     if (new_sl - old_sl) / entry_price > 0.001:
                         tools.send_telegram_message(f"📈 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
+
                     
                 # 3. STOP HIT CHECK
                 if real_price <= current_sl: # Check Live Price vs SL
@@ -719,9 +832,17 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                         logger.info(f"📉 Trailing SL Down for {symbol}: {old_sl:.4f} → {new_sl:.4f} (Dist: {final_dist:.4f})")
                         pos['stop_loss'] = new_sl
                         current_sl = new_sl
+                        # LOG TO RADIOGRAPHY
+                        log_radiography('SL_MOVE', {
+                            'price': real_price,
+                            'old_sl': old_sl,
+                            'new_sl': new_sl,
+                            'profit_pct': profit_pct
+                        })
                         # Notify on significant moves (every 0.1% or more)
                         if (old_sl - new_sl) / entry_price > 0.001:
                             tools.send_telegram_message(f"📉 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
+
                     
                 # 3. STOP HIT CHECK
                 if real_price >= current_sl: # Check Live Price vs SL
@@ -901,12 +1022,21 @@ def _record_trade(state, symbol, type, entry, exit, pnl_pct, pnl_usd, reason, co
         "context": context # SAVE FORENSIC CONTEXT
     }
     
+    # LOG TO RADIOGRAPHY
+    log_radiography('EXIT', {
+        'exit_price': exit,
+        'reason': reason,
+        'pnl': pnl_usd,
+        'pnl_pct': pnl_pct
+    })
+    
     state['trade_history'].append(trade_record)
     state['performance_metrics']['total_pnl'] += pnl_usd
     state["account_balance"] += pnl_usd
     
     if pnl_usd > 0: state['performance_metrics']['wins'] += 1
     else: state['performance_metrics']['losses'] += 1
+
     
     if pnl_usd < 0:
         logger.info("Loss detected. Triggering Forensic Reflexion...")
