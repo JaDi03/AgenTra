@@ -452,15 +452,70 @@ def calculate_vpin_lite(df: pd.DataFrame) -> float:
 def get_latest_market_snippet(df: pd.DataFrame, label: str = "") -> str:
     """
     Returns a string summary of the most recent market data for AI context.
+    ENRICHED: Now includes historical trends, last 3 candles, and volume analysis.
     """
     try:
         if df.empty:
             return f"{label} No Data"
         
         last = df.iloc[-1]
-        snippet = f"{label} Close: {last['close']} | RSI: {last.get('RSI_14', 0):.2f} | ADX: {last.get('ADX_14', 0):.2f}"
-        return snippet
+        current_close = last['close']
+        current_rsi = last.get('RSI_14', 0)
+        current_adx = last.get('ADX_14', 0)
+        current_vol = last.get('volume', 0)
+        
+        # === BASE INFO ===
+        snippet = f"{label}\n"
+        snippet += f"Current: Close {current_close:.2f} | RSI {current_rsi:.2f} | ADX {current_adx:.2f}\n"
+        
+        # === HISTORICAL TRENDS (5 candles ago = 75 min for 15m, 20h for 4h) ===
+        if len(df) >= 5:
+            candles_ago_5 = df.iloc[-5]
+            rsi_5_ago = candles_ago_5.get('RSI_14', 0)
+            adx_5_ago = candles_ago_5.get('ADX_14', 0)
+            vol_5_ago = candles_ago_5.get('volume', 0)
+            
+            # Calculate trends
+            rsi_change = current_rsi - rsi_5_ago
+            adx_change = current_adx - adx_5_ago
+            vol_change_pct = ((current_vol - vol_5_ago) / vol_5_ago * 100) if vol_5_ago > 0 else 0
+            
+            # Trend arrows
+            rsi_arrow = "↑" if rsi_change > 2 else "↓" if rsi_change < -2 else "→"
+            adx_arrow = "↑" if adx_change > 2 else "↓" if adx_change < -2 else "→"
+            vol_arrow = "↑" if vol_change_pct > 20 else "↓" if vol_change_pct < -20 else "→"
+            
+            snippet += f"5-Candle Trends:\n"
+            snippet += f"  RSI: {rsi_5_ago:.1f} → {current_rsi:.1f} {rsi_arrow} ({rsi_change:+.1f})\n"
+            snippet += f"  ADX: {adx_5_ago:.1f} → {current_adx:.1f} {adx_arrow} ({adx_change:+.1f})\n"
+            snippet += f"  Volume: {vol_change_pct:+.1f}% {vol_arrow}\n"
+        
+        # === LAST 3 CANDLES (Price Action Journey) ===
+        if len(df) >= 3:
+            last_3 = df.iloc[-3:][['close', 'high', 'low', 'volume']].to_dict('records')
+            snippet += f"Last 3 Candles:\n"
+            for i, candle in enumerate(last_3, 1):
+                candle_label = "NOW" if i == 3 else f"-{3-i}"
+                snippet += f"  [{candle_label}] C:{candle['close']:.2f} H:{candle['high']:.2f} L:{candle['low']:.2f} V:{candle['volume']:.0f}\n"
+        
+        # === VOLUME ANALYSIS ===
+        if len(df) >= 20:
+            vol_recent_5 = df.iloc[-5:]['volume'].mean()
+            vol_older_15 = df.iloc[-20:-5]['volume'].mean()
+            
+            if vol_recent_5 > vol_older_15 * 1.2:
+                vol_trend = "INCREASING (Conviction growing)"
+            elif vol_recent_5 < vol_older_15 * 0.8:
+                vol_trend = "DECREASING (Low conviction)"
+            else:
+                vol_trend = "STABLE"
+            
+            snippet += f"Volume Trend: {vol_trend} (Avg: {vol_recent_5:.0f} vs {vol_older_15:.0f})\n"
+        
+        return snippet.strip()
+        
     except Exception as e:
+        logger.error(f"Snippet Error for {label}: {e}")
         return f"{label} Snippet Error"
 
 def calculate_hurst(df: pd.DataFrame, max_lag=20) -> float:
