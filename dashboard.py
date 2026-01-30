@@ -100,49 +100,55 @@ if state:
                 entry_p = float(pos.get('entry_price', 0))
                 qty = float(pos.get('quantity', 0))
                 sl = float(pos.get('stop_loss', 0))
-                init_sl = float(pos.get('initial_stop_loss', sl)) # Get Original SL
-                curr_p = float(pos.get('current_price', entry_p)) 
+                symbol = pos['symbol']
+                pos_type = pos['type']
+                entry_price = float(pos['entry_price'])
+                current_price_val = float(pos['current_price'])
+                quantity = float(pos['quantity'])
                 
-                # SL Delta Logic (Show trailing progress)
-                sl_delta = sl - init_sl
-                # For Long: Up (+delta) is Good (Green). Normal.
-                # For Short: Down (-delta) is Good (Green). Inverse.
-                d_color = "normal" if p_type == "LONG" else "inverse"
-                if abs(sl_delta) < 0.0000001: sl_delta = None # Hide if no change
-
-                # Calc Unrealized PnL
-                if p_type == "LONG":
-                     u_pnl_usd = (curr_p - entry_p) * qty
-                     u_pnl_pct = ((curr_p - entry_p) / entry_p) * 100
-                else:
-                     u_pnl_usd = (entry_p - curr_p) * qty
-                     u_pnl_pct = ((entry_p - curr_p) / entry_p) * 100
+                # Calculate Unrealized PnL
+                if pos_type == "LONG":
+                    unrealized_pnl = (current_price_val - entry_price) * quantity
+                else: # SHORT
+                    unrealized_pnl = (entry_price - current_price_val) * quantity
                 
-                # Color logic
-                pnl_color = "🟢" if u_pnl_usd >= 0 else "🔴"
+                pnl_pct = (unrealized_pnl / (entry_price * quantity)) * 100 if (entry_price * quantity) > 0 else 0
                 
-                # Time formatting (Shorten it)
-                e_time = pos.get('entry_time', '')
-                try:
-                    short_time = e_time.split(' ')[1][:5] if ' ' in e_time else e_time
-                except:
-                    short_time = e_time
-
-                # Card Header
-                label = f"{pnl_color} {short_time} | {symbol} {p_type} | PnL: ${u_pnl_usd:.2f} ({u_pnl_pct:.2f}%)"
+                # Emoji for PnL
+                emoji = "🟢" if unrealized_pnl >= 0 else "🔴"
                 
-                with st.expander(label, expanded=False):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Entry Price", f"${entry_p:.5f}")
-                    c2.metric("Size", f"{qty:.4f}")
-                    # Format delta to string to avoid float errors
-                    delta_str = f"{sl_delta:.5f}" if sl_delta is not None else None
-                    c3.metric("Stop Loss", f"${sl:.5f}", delta=delta_str, delta_color=d_color)
-                    c4.metric("Take Profit", f"${float(pos.get('take_profit',0) or 0):.5f}")
-                
-                    st.divider()
-                    st.caption(f"**Full Entry Time:** {e_time}")
-                    st.markdown(f"**Reason:** \n > {pos.get('reason', 'No specific reason logged.')}")
+                # Position Card
+                with st.container():
+                    col_info, col_btn = st.columns([4, 1])
+                    
+                    with col_info:
+                        st.markdown(f"### {emoji} {pos['entry_time'][:16]} | {symbol} {pos_type} | PnL: ${unrealized_pnl:.2f} ({pnl_pct:.2f}%)")
+                        
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.metric("Entry Price", f"${entry_price:.5f}")
+                            st.metric("Size", f"{quantity:.4f}")
+                        with col_b:
+                            # Show both original and current SL
+                            current_sl = float(pos.get('stop_loss', 0))
+                            initial_sl = float(pos.get('initial_stop_loss', current_sl))  # Fallback to current if not saved
+                            
+                            sl_moved = abs(current_sl - initial_sl) > 0.01  # Check if SL has been adjusted
+                            
+                            if sl_moved:
+                                sl_display = f"${current_sl:.5f} (Orig: ${initial_sl:.5f})"
+                                sl_delta = f"{current_sl - initial_sl:+.2f}"
+                            else:
+                                sl_display = f"${current_sl:.5f}"
+                                sl_delta = None
+                            
+                            st.metric("Stop Loss", sl_display, delta=sl_delta)
+                            st.metric("Take Profit", f"${float(pos.get('take_profit', 0)):.5f}")
+                        
+                        # Entry Reason
+                        with st.expander("📋 Full Entry Time: " + pos.get('entry_time', 'N/A')):
+                            st.text("Reason:")
+                            st.write(pos.get('reason', 'No specific reason logged.'))
                     
                     st.divider()
                     # --- MANUAL CLOSE BUTTON (INSIDE CARD) ---
