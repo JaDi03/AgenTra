@@ -129,107 +129,158 @@ if state:
                     label = f"{emoji} {symbol} {pos_type} | PnL: ${unrealized_pnl:.2f} ({pnl_pct:.2f}%)"
                     
                     with st.expander(label, expanded=True):
-                        # Metrics Row (compact)
+                        # Metrics Row (compact with 4 decimals)
                         col_a, col_b, col_c = st.columns(3)
                         with col_a:
-                            st.markdown(f"<p style='font-size:12px; margin:0;'>Entry</p><p style='font-size:16px; font-weight:bold; margin:0;'>${entry_price:.2f}</p>", unsafe_allow_html=True)
+                            st.markdown(f"<p style='font-size:12px; margin:0;'>Entry</p><p style='font-size:16px; font-weight:bold; margin:0;'>${entry_price:.4f}</p>", unsafe_allow_html=True)
                             st.markdown(f"<p style='font-size:12px; margin:0;'>Size</p><p style='font-size:16px; font-weight:bold; margin:0;'>{quantity:.4f}</p>", unsafe_allow_html=True)
                         with col_b:
-                            # Current SL
+                            # Current SL (4 decimals)
                             if sl_moved:
                                 sl_delta_val = current_sl - initial_sl
                                 delta_color = "green" if (pos_type == "SHORT" and sl_delta_val < 0) or (pos_type == "LONG" and sl_delta_val > 0) else "red"
-                                st.markdown(f"<p style='font-size:12px; margin:0;'>Current SL</p><p style='font-size:16px; font-weight:bold; margin:0; color:{delta_color};'>${current_sl:.2f} ({sl_delta_val:+.2f})</p>", unsafe_allow_html=True)
-                                st.markdown(f"<p style='font-size:10px; color:gray; margin:0;'>Original: ${initial_sl:.2f}</p>", unsafe_allow_html=True)
+                                st.markdown(f"<p style='font-size:12px; margin:0;'>Current SL</p><p style='font-size:16px; font-weight:bold; margin:0; color:{delta_color};'>${current_sl:.4f} ({sl_delta_val:+.4f})</p>", unsafe_allow_html=True)
+                                st.markdown(f"<p style='font-size:10px; color:gray; margin:0;'>Original: ${initial_sl:.4f}</p>", unsafe_allow_html=True)
                             else:
-                                st.markdown(f"<p style='font-size:12px; margin:0;'>Stop Loss</p><p style='font-size:16px; font-weight:bold; margin:0;'>${current_sl:.2f}</p>", unsafe_allow_html=True)
+                                st.markdown(f"<p style='font-size:12px; margin:0;'>Stop Loss</p><p style='font-size:16px; font-weight:bold; margin:0;'>${current_sl:.4f}</p>", unsafe_allow_html=True)
                         with col_c:
-                            st.markdown(f"<p style='font-size:12px; margin:0;'>Take Profit</p><p style='font-size:16px; font-weight:bold; margin:0;'>${tp_price:.2f}</p>", unsafe_allow_html=True)
+                            st.markdown(f"<p style='font-size:12px; margin:0;'>Take Profit</p><p style='font-size:16px; font-weight:bold; margin:0;'>${tp_price:.4f}</p>", unsafe_allow_html=True)
                         
                         st.divider()
                         
-                        # Chart with Entry/SL/TP markers
+                        # Real Candlestick Chart with Entry/SL/TP markers
                         try:
                             import plotly.graph_objects as go
+                            from plotly.subplots import make_subplots
+                            import requests
+                            from datetime import datetime, timedelta
                             
-                            # Create price levels for visualization
-                            levels = [entry_price, current_sl, tp_price]
-                            if sl_moved:
-                                levels.append(initial_sl)
+                            # Fetch real candlestick data from Binance
+                            @st.cache_data(ttl=60)
+                            def fetch_candles(symbol_raw, limit=50):
+                                try:
+                                    url = f"https://api.binance.com/api/v3/klines"
+                                    params = {
+                                        'symbol': symbol_raw.replace('/', ''),
+                                        'interval': '15m',
+                                        'limit': limit
+                                    }
+                                    response = requests.get(url, params=params, timeout=5)
+                                    data = response.json()
+                                    
+                                    # Parse candlestick data
+                                    times = [datetime.fromtimestamp(x[0]/1000) for x in data]
+                                    opens = [float(x[1]) for x in data]
+                                    highs = [float(x[2]) for x in data]
+                                    lows = [float(x[3]) for x in data]
+                                    closes = [float(x[4]) for x in data]
+                                    
+                                    return times, opens, highs, lows, closes
+                                except:
+                                    return None, None, None, None, None
                             
-                            min_price = min(levels) * 0.995
-                            max_price = max(levels) * 1.005
+                            times, opens, highs, lows, closes = fetch_candles(symbol)
                             
-                            fig = go.Figure()
-                            
-                            # Current Price line (dynamic)
-                            fig.add_trace(go.Scatter(
-                                x=[0, 1],
-                                y=[current_price_val, current_price_val],
-                                mode='lines',
-                                name='Current Price',
-                                line=dict(color='white', width=2, dash='dot')
-                            ))
-                            
-                            # Entry Price
-                            fig.add_trace(go.Scatter(
-                                x=[0, 1],
-                                y=[entry_price, entry_price],
-                                mode='lines+text',
-                                name='Entry',
-                                line=dict(color='blue', width=2),
-                                text=['', f'Entry: ${entry_price:.2f}'],
-                                textposition='middle right'
-                            ))
-                            
-                            # Stop Loss levels
-                            if sl_moved:
-                                # Original SL (faded)
-                                fig.add_trace(go.Scatter(
-                                    x=[0, 1],
-                                    y=[initial_sl, initial_sl],
-                                    mode='lines+text',
-                                    name='SL Original',
-                                    line=dict(color='red', width=1, dash='dash'),
-                                    text=['', f'SL1: ${initial_sl:.2f}'],
-                                    textposition='middle right'
+                            if times is not None:
+                                fig = go.Figure()
+                                
+                                # Candlestick chart
+                                fig.add_trace(go.Candlestick(
+                                    x=times,
+                                    open=opens,
+                                    high=highs,
+                                    low=lows,
+                                    close=closes,
+                                    name='Price',
+                                    increasing_line_color='#26A69A',
+                                    decreasing_line_color='#EF5350'
                                 ))
-                            
-                            # Current SL
-                            fig.add_trace(go.Scatter(
-                                x=[0, 1],
-                                y=[current_sl, current_sl],
-                                mode='lines+text',
-                                name='SL Current',
-                                line=dict(color='red', width=2),
-                                text=['', f'SL: ${current_sl:.2f}'],
-                                textposition='middle right'
-                            ))
-                            
-                            # Take Profit
-                            fig.add_trace(go.Scatter(
-                                x=[0, 1],
-                                y=[tp_price, tp_price],
-                                mode='lines+text',
-                                name='Take Profit',
-                                line=dict(color='green', width=2),
-                                text=['', f'TP: ${tp_price:.2f}'],
-                                textposition='middle right'
-                            ))
-                            
-                            fig.update_layout(
-                                height=250,
-                                margin=dict(l=0, r=100, t=20, b=0),
-                                xaxis=dict(visible=False),
-                                yaxis=dict(range=[min_price, max_price], title='Price'),
-                                showlegend=False,
-                                paper_bgcolor='rgba(0,0,0,0)',
-                                plot_bgcolor='rgba(0,0,0,0)',
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Current Price line with label
+                                fig.add_trace(go.Scatter(
+                                    x=[times[0], times[-1]],
+                                    y=[current_price_val, current_price_val],
+                                    mode='lines+text',
+                                    name='Current',
+                                    line=dict(color='#FFD700', width=2, dash='dot'),
+                                    text=['', f'Now: ${current_price_val:.4f}'],
+                                    textposition='middle right',
+                                    textfont=dict(color='#FFD700', size=11)
+                                ))
+                                
+                                # Entry Price
+                                fig.add_trace(go.Scatter(
+                                    x=[times[0], times[-1]],
+                                    y=[entry_price, entry_price],
+                                    mode='lines+text',
+                                    name='Entry',
+                                    line=dict(color='#2196F3', width=2),
+                                    text=['', f'Entry: ${entry_price:.4f}'],
+                                    textposition='middle right',
+                                    textfont=dict(color='#2196F3', size=10)
+                                ))
+                                
+                                # Stop Loss levels
+                                if sl_moved:
+                                    # Original SL (faded)
+                                    fig.add_trace(go.Scatter(
+                                        x=[times[0], times[-1]],
+                                        y=[initial_sl, initial_sl],
+                                        mode='lines+text',
+                                        name='SL Initial',
+                                        line=dict(color='#EF5350', width=1, dash='dash'),
+                                        text=['', f'SL1: ${initial_sl:.4f}'],
+                                        textposition='middle right',
+                                        textfont=dict(color='#EF5350', size=9)
+                                    ))
+                                
+                                # Current SL
+                                fig.add_trace(go.Scatter(
+                                    x=[times[0], times[-1]],
+                                    y=[current_sl, current_sl],
+                                    mode='lines+text',
+                                    name='SL',
+                                    line=dict(color='#F44336', width=2),
+                                    text=['', f'SL: ${current_sl:.4f}'],
+                                    textposition='middle right',
+                                    textfont=dict(color='#F44336', size=10)
+                                ))
+                                
+                                # Take Profit
+                                fig.add_trace(go.Scatter(
+                                    x=[times[0], times[-1]],
+                                    y=[tp_price, tp_price],
+                                    mode='lines+text',
+                                    name='TP',
+                                    line=dict(color='#4CAF50', width=2),
+                                    text=['', f'TP: ${tp_price:.4f}'],
+                                    textposition='middle right',
+                                    textfont=dict(color='#4CAF50', size=10)
+                                ))
+                                
+                                fig.update_layout(
+                                    height=350,
+                                    margin=dict(l=0, r=100, t=10, b=0),
+                                    xaxis=dict(
+                                        rangeslider=dict(visible=False),
+                                        type='date'
+                                    ),
+                                    yaxis=dict(title='Price (USDT)'),
+                                    showlegend=False,
+                                    paper_bgcolor='rgba(0,0,0,0)',
+                                    plot_bgcolor='rgba(17,17,17,1)',
+                                    font=dict(color='white'),
+                                    hovermode='x unified'
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.warning("Could not fetch chart data from Binance")
+                                
                         except ImportError:
                             st.warning("Install plotly for chart visualization: `pip install plotly`")
+                        except Exception as e:
+                            st.error(f"Chart error: {e}")
                         
                         st.divider()
                         st.markdown(f"<p style='font-size:12px;'><b>Entry Time (UTC-6):</b> {pos.get('entry_time', 'N/A')}</p>", unsafe_allow_html=True)
