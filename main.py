@@ -98,8 +98,13 @@ def log_radiography(event_type, data):
                 f.write(entry_text)
                 
             elif event_type == 'SL_MOVE':
-                sl_text = f"| {now} | ${data.get('price', 0):.4f} | ${data.get('old_sl', 0):.4f} | ${data.get('new_sl', 0):.4f} | {data.get('profit_pct', 0):.2f}% |\n"
+                # Calculate if the new SL is in profit territory
+                new_sl = data.get('new_sl', 0)
+                # We need entry_price to know if it's profit, but for now we labels as 'SL New'
+                # and the profit_pct will show the sign correctly (+ for profit, - for loss)
+                sl_text = f"| {now} | ${data.get('price', 0):.4f} | ${data.get('old_sl', 0):.4f} | ${new_sl:.4f} | {data.get('profit_pct', 0):.2f}% |\n"
                 f.write(sl_text)
+
                 
             elif event_type == 'EXIT':
                 exit_text = f"""
@@ -770,9 +775,17 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                         'new_sl': new_sl,
                         'profit_pct': profit_pct
                     })
+                    locked_profit = (new_sl - entry_price) / entry_price * 100
+                    
+                    if locked_profit > 0:
+                        lock_msg = f"💰 **Profit Locked: {locked_profit:.2f}%**"
+                    else:
+                        risk_pct = abs(locked_profit)
+                        lock_msg = f"🛡️ **Risk Reduced to: {risk_pct:.2f}%**"
+
                     # Notify on significant moves (every 0.1% or more)
                     if (new_sl - old_sl) / entry_price > 0.001:
-                        tools.send_telegram_message(f"📈 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
+                        tools.send_telegram_message(f"📈 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nMarket: {profit_pct:.2f}% | {lock_msg}")
 
                     
                 # 3. STOP HIT CHECK
@@ -839,9 +852,17 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                             'new_sl': new_sl,
                             'profit_pct': profit_pct
                         })
+                        locked_profit = (entry_price - new_sl) / entry_price * 100
+                        
+                        if locked_profit > 0:
+                            lock_msg = f"💰 **Profit Locked: {locked_profit:.2f}%**"
+                        else:
+                            risk_pct = abs(locked_profit)
+                            lock_msg = f"🛡️ **Risk Reduced to: {risk_pct:.2f}%**"
+
                         # Notify on significant moves (every 0.1% or more)
                         if (old_sl - new_sl) / entry_price > 0.001:
-                            tools.send_telegram_message(f"📉 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
+                            tools.send_telegram_message(f"📉 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nMkt: {profit_pct:.2f}% | {lock_msg}")
 
                     
                 # 3. STOP HIT CHECK
