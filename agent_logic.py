@@ -230,120 +230,40 @@ def analyze_market_omnidirectional(summary_micro, summary_macro, regime_info, st
     bias = regime_info.get('bias', 'None')
     reason = regime_info.get('reason', 'No regime detected')
     
-    strategy_instructions = ""
-    
     # READ MEMORY
     lessons_text = _read_lessons()
     
-    if playbook == 'TREND_FOLLOWING':
-        strategy_instructions = """
-        ACTIVE PLAYBOOK: TREND FOLLOWING
-        
-        YOUR GOAL: Ride momentum. Don't fight the trend.
-        
-        LONG Setup:
-        - Price > EMA200 (4H)
-        - Pullback to EMA20/50 (15M)
-        - RSI 50-70
-        - Entry on bounce confirmation
-        - Wide trailing stop (2.5 ATR)
-        
-        SHORT Setup:
-        - Price < EMA200 (4H)
-        - Pullback to EMA20/50 (15M)
-        - RSI 30-50
-        - Entry on rejection confirmation
-        - Wide trailing stop (2.5 ATR)
-        
-        FORBIDDEN:
-        - Counter-trend trades
-        - Tight take profits (let it run)
-        """
+    # IMPORT STRATEGY RULES from strategies.py (SINGLE SOURCE OF TRUTH)
+    import strategies
     
-    elif playbook == 'MEAN_REVERSION':
-        strategy_instructions = """
-        ACTIVE PLAYBOOK: MEAN REVERSION
-        
-        YOUR GOAL: Buy low, sell high within the range.
-        
-        LONG Setup (at VAL):
-        - Price touches VAL
-        - RSI < 35 + bullish divergence
-        - Low volume (not capitulation)
-        - SL: 0.5% below VAL
-        - TP: POC (50%) + VAH (50%)
-        
-        SHORT Setup (at VAH):
-        - Price touches VAH
-        - RSI > 65 + bearish divergence
-        - Low volume (not breakout)
-        - SL: 0.5% above VAH
-        - TP: POC (50%) + VAL (50%)
-        
-        MANDATORY:
-        - Channel width > 2.5 ATR
-        - TIME STOP: Exit if no profit in 45min
-        
-        FORBIDDEN:
-        - Chasing breakouts
-        - Trading in narrow ranges
-        """
+    # Map regime to strategy type for get_strategy_rules
+    regime_type_map = {
+        'BREAKOUT': 'TRENDING',  # Use TRENDING rules for breakouts
+        'TRENDING': 'TRENDING',
+        'RANGE': 'MEAN_REVERSION',
+        'UNCERTAIN': 'DEFENSIVE',
+        'NEUTRAL': 'DEFENSIVE'
+    }
     
-    elif playbook == 'MOMENTUM_CATCH':
-        strategy_instructions = """
-        ACTIVE PLAYBOOK: BREAKOUT/BREAKDOWN
-        
-        YOUR GOAL: Catch early momentum shifts.
-        
-        LONG Setup (Breakout):
-        - Price breaks VAH with volume > 1.5x avg
-        - Wait for retest of VAH as support
-        - RSI > 60 but < 80
-        - Entry on retest confirmation
-        - SL: Below VAH
-        - TP: Next resistance
-        
-        SHORT Setup (Breakdown):
-        - Price breaks VAL with volume > 1.5x avg
-        - Wait for retest of VAL as resistance
-        - RSI < 40 but > 20
-        - Entry on retest confirmation
-        - SL: Above VAL
-        - TP: Next support
-        
-        CRITICAL:
-        - NO volume = NO trade (fake breakout)
-        - NO retest = TOO LATE (don't chase)
-        """
+    regime_for_strategy = regime_type_map.get(regime_info.get('regime', 'NEUTRAL'), 'DEFENSIVE')
     
-    elif playbook == 'DEFENSIVE':
-        strategy_instructions = """
-        ACTIVE PLAYBOOK: DEFENSIVE (Uncertainty / Drift)
-        
-        YOUR GOAL: Preserve capital. Only trade perfect setups.
-        
-        RULES:
-        - Reduce position size (handled by execution engine)
-        - Only trade if confidence >= 8/10
-        - Prefer mean reversion over trend (more predictable)
-        - Tighter stops (1.0 ATR)
-        
-        FORBIDDEN:
-        - Complex setups
-        - Ambiguous signals
-        - Any trade < 8/10 confidence
-        """
+    # Get authoritative rules from strategies.py
+    # Extract hurst from smc_context_str if available
+    import re
+    hurst_match = re.search(r'Hurst: ([\d.]+)', smc_context_str)
+    hurst_value = float(hurst_match.group(1)) if hurst_match else 0.5
     
-    else:  # WAIT
-        strategy_instructions = """
-        ACTIVE PLAYBOOK: WAIT
-        
-        No clear regime detected. Do NOT force trades.
-        
-        Only consider entry if:
-        - Confidence would be 9/10 or higher
-        - Setup is textbook perfect
-        """
+    strategy_instructions = strategies.get_strategy_rules(regime_for_strategy, hurst_value)
+    
+    # Add playbook-specific tactical notes
+    if playbook == 'MOMENTUM_CATCH':
+        strategy_instructions += """
+    
+    --- TACTICAL NOTES FOR BREAKOUT ---
+    - CRITICAL: Wait for retest confirmation (don't chase)
+    - Volume MUST be > 1.5x average
+    - If no volume = FAKE BREAKOUT, skip
+    """
     
     prompt = f"""
     You are an OMNIDIRECTIONAL trading agent operating in {playbook} mode.

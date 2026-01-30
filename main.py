@@ -145,12 +145,13 @@ def classify_market_regime(df_micro, df_macro, vp_data, btc_pct_change, drift_de
         }
     
     # Priority 3: Range (Low ADX + Low Hurst + No BTC Pump/Dump)
-    if adx_4h < 25 and hurst < 0.45 and abs(btc_pct_change) < 1.0:
+    # ADJUSTED: More permissive to detect ranging 70-80% of the time
+    if adx_4h < 20 and hurst < 0.50:  # Lowered ADX threshold (25→20), raised Hurst (0.45→0.50)
         channel_width = 0
         if vp_data['POC'] > 0:
             channel_width = (vp_data['VAH'] - vp_data['VAL']) / vp_data['POC']
         
-        if channel_width > 0.025:  # At least 2.5% wide channel to trade
+        if channel_width > 0.02:  # Lowered from 2.5% to 2% to include tighter ranges
             return {
                 'regime': 'RANGE',
                 'playbook': 'MEAN_REVERSION',
@@ -176,6 +177,76 @@ def classify_market_regime(df_micro, df_macro, vp_data, btc_pct_change, drift_de
         'bias': None,
         'confidence_adjustment': 0,
         'reason': "No clear regime - waiting for setup"
+    }
+
+def detect_trend_state(df_micro, df_macro, vol_recent, vol_older):
+    """
+    Detects the current state of the trend for existing positions.
+    Returns: "ACTIVE" | "CONSOLIDATING" | "REVERSING" | "UNCERTAIN"
+    
+    Purpose: Helps bot distinguish between:
+    - ACTIVE: Trend is strong and ongoing → HOLD
+    - CONSOLIDATING: Trend is pausing/resting → HOLD (be patient)
+    - REVERSING: Trend is dying/reversing → EXIT
+    """
+    micro_adx_current = df_micro.iloc[-1]['ADX_14']
+    micro_adx_5_ago = df_micro.iloc[-5]['ADX_14'] if len(df_micro) >= 5 else micro_adx_current
+    macro_adx_current = df_macro.iloc[-1]['ADX_14']
+    
+    adx_momentum = micro_adx_current - micro_adx_5_ago
+    
+    # Volume trend
+    if vol_recent > vol_older * 1.2:
+        vol_trend = "INCREASING"
+    elif vol_recent < vol_older * 0.8:
+        vol_trend = "DECREASING"
+    else:
+        vol_trend = "STABLE"
+    
+    # === TREND STATE LOGIC ===
+    
+    # 1. ACTIVE: Strong trend on both timeframes, ADX growing or stable
+    if (micro_adx_current > 25 and macro_adx_current > 25 and adx_momentum >= 0):
+        return {
+            'state': 'ACTIVE',
+            'icon': '🚀',
+            'micro_adx': micro_adx_current,
+            'macro_adx': macro_adx_current,
+            'adx_momentum': adx_momentum,
+            'vol_trend': vol_trend
+        }
+    
+    # 2. CONSOLIDATING: Macro strong but micro weak, low volume (pausing)
+    if (macro_adx_current > 20 and 15 < micro_adx_current < 25 and vol_trend == "DECREASING"):
+        return {
+            'state': 'CONSOLIDATING',
+            'icon': '🔄',
+            'micro_adx': micro_adx_current,
+            'macro_adx': macro_adx_current,
+            'adx_momentum': adx_momentum,
+            'vol_trend': vol_trend
+        }
+    
+    # 3. REVERSING: Both timeframes weak, OR increasing volume opposite direction
+    if ((macro_adx_current < 20 and micro_adx_current < 20) or 
+        (micro_adx_current < 20 and vol_trend == "INCREASING")):
+        return {
+            'state': 'REVERSING',
+            'icon': '⚠️',
+            'micro_adx': micro_adx_current,
+            'macro_adx': macro_adx_current,
+            'adx_momentum': adx_momentum,
+            'vol_trend': vol_trend
+        }
+    
+    # 4. UNCERTAIN: Mixed signals
+    return {
+        'state': 'UNCERTAIN',
+        'icon': '🤔',
+        'micro_adx': micro_adx_current,
+        'macro_adx': macro_adx_current,
+        'adx_momentum': adx_momentum,
+        'vol_trend': vol_trend
     }
 
 def calculate_position_size_by_regime(regime, account_balance, risk_pct, entry, sl):
@@ -286,11 +357,20 @@ def process_pair(symbol, btc_context_str, global_sentiment):
         regime_type = regime_info['regime']
         playbook = regime_info['playbook']
         
+        # --- TREND STATE DETECTION (NEW: For position management) ---
+        vol_recent = df_micro.iloc[-5:]['volume'].mean()
+        vol_older = df_micro.iloc[-20:-5]['volume'].mean() if len(df_micro) >= 20 else vol_recent
+        trend_state_info = detect_trend_state(df_micro, df_macro, vol_recent, vol_older)
+        
         smc_context_str = f"--- MARKET PHYSICS (QUANT) ---\n" \
                           f"Regime: {regime_type} (Playbook: {playbook})\n" \
                           f"Bias: {regime_info['bias']}\n" \
                           f"Reason: {regime_info['reason']}\n" \
                           f"Hurst: {hurst_val:.2f} | VPIN: {vpin_score}\n\n" \
+                          f"{trend_state_info['icon']} TREND STATE: {trend_state_info['state']}\n" \
+                          f"  - Micro ADX: {trend_state_info['micro_adx']:.1f} (momentum: {trend_state_info['adx_momentum']:+.1f})\n" \
+                          f"  - Macro ADX: {trend_state_info['macro_adx']:.1f}\n" \
+                          f"  - Volume Trend: {trend_state_info['vol_trend']} ({vol_recent:.0f} vs {vol_older:.0f})\n\n" \
                           f"--- VOLUME PROFILE (15m) ---\n" \
                           f"{vp_data['profile_str']}\n\n" \
                           f"--- SMART MONEY CONCEPTS (15m) ---\n" \
@@ -638,6 +718,43 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     current_price = real_price if real_price <= take_profit else take_profit
                     reason = "TAKE PROFIT HIT (LIVE/WICK)"
 
+        
+        # --- EXIT ANTICIPADO: Check for Confirmed Trend Reversal ---
+        # Only applies to TRENDING positions
+        if pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "REVERSING":
+            entry_regime_adx = pos.get('regime_at_entry', {}).get('adx', 0)
+            logger.warning(f"🚨 TREND REVERSAL DETECTED for {symbol}")
+            logger.warning(f"   Strategy: {pos['strategy_used']} | Entry ADX: {entry_regime_adx:.1f} → Current Micro: {trend_state_info['micro_adx']:.1f}")
+            logger.warning(f"   Macro ADX: {trend_state_info['macro_adx']:.1f} | Volume Trend: {trend_state_info['vol_trend']}")
+            logger.warning(f"   📉 FORCING EXIT to preserve capital (trend is dying)")
+            
+            decision = "SELL" if pos_type == "LONG" else "BUY"
+            reason = f"TREND REVERSAL (State: {trend_state_info['state']}, Macro ADX: {trend_state_info['macro_adx']:.1f}, Vol: {trend_state_info['vol_trend']})"
+            tools.send_telegram_message(f"⚠️ **TREND REVERSAL EXIT**\n{symbol} {pos_type}\nReason: {reason}")
+        
+        elif pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "CONSOLIDATING":
+            # Initialize consolidation tracker
+            if 'consolidation_start' not in pos:
+                pos['consolidation_start'] = datetime.now().isoformat()
+                pos['consolidation_candles'] = 0
+                logger.info(f"🔄 {symbol} started CONSOLIDATING (trend pause detected)")
+            
+            pos['consolidation_candles'] = pos.get('consolidation_candles', 0) + 1
+            
+            # Give it 5 candles (75 min) to resume
+            if pos['consolidation_candles'] >= 5:
+                logger.warning(f"⏰ {symbol} consolidating for {pos['consolidation_candles']} candles (75+ min)")
+                logger.warning(f"   Patience limit reached. Considering tighter SL management.")
+                # Optionally tighten trailing SL here if needed
+            else:
+                logger.info(f"🕐 {symbol} CONSOLIDATING {pos['consolidation_candles']}/5 candles, being patient...")
+        
+        elif pos.get('strategy_used') == "TRENDING" and trend_state_info['state'] == "ACTIVE":
+            # Trend is healthy, reset consolidation tracker if it exists
+            if 'consolidation_start' in pos:
+                logger.info(f"✅ {symbol} trend RESUMED (ACTIVE state). Clearing consolidation tracker.")
+                pos.pop('consolidation_start', None)
+                pos.pop('consolidation_candles', None)
         
         if os.path.exists("STOP_REQUEST"):
              decision = "SELL" if pos_type == "LONG" else "BUY"
