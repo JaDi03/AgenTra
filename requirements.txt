@@ -1,0 +1,7 @@
+ccxt
+pandas
+google-generativeai
+python-dotenv
+feedparser
+streamlit
+requests
