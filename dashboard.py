@@ -155,6 +155,9 @@ if state:
                             from datetime import datetime
                             import json
                             
+                            # Debug: Show what we're trying to fetch
+                            st.text(f"Fetching data for {symbol}")
+                            
                             # Fetch real candlestick data from Binance
                             @st.cache_data(ttl=60)
                             def fetch_candles(symbol_raw, limit=100):
@@ -186,7 +189,9 @@ if state:
                             
                             candles = fetch_candles(symbol)
                             
-                            if candles:
+                            if candles and len(candles) > 0:
+                                st.success(f"Loaded {len(candles)} candles")
+                                
                                 # Find entry time in candles to place marker
                                 entry_timestamp = pos.get('entry_time', '')
                                 try:
@@ -194,10 +199,11 @@ if state:
                                     from datetime import datetime
                                     entry_dt = datetime.strptime(entry_timestamp.split(' UTC')[0], "%Y-%m-%d %H:%M:%S")
                                     entry_time_unix = int(entry_dt.timestamp())
-                                except:
+                                except Exception as e:
+                                    st.warning(f"Could not parse entry time: {e}")
                                     entry_time_unix = candles[-20]['time']  # Default to 20 candles ago
                                 
-                                # Prepare data for JavaScript
+                                # Prepare data for JavaScript (escape properly)
                                 candles_json = json.dumps(candles)
                                 
                                 # Create marker for entry
@@ -205,140 +211,148 @@ if state:
                                 marker_shape = 'arrowUp' if pos_type == 'LONG' else 'arrowDown'
                                 marker_position = 'belowBar' if pos_type == 'LONG' else 'aboveBar'
                                 
-                                markers_json = json.dumps([{
+                                markers = [{
                                     'time': entry_time_unix,
                                     'position': marker_position,
                                     'color': marker_color,
                                     'shape': marker_shape,
                                     'text': f'{pos_type} @ ${entry_price:.4f}'
-                                }])
+                                }]
+                                markers_json = json.dumps(markers)
                                 
                                 # HTML component with Lightweight Charts
                                 chart_html = f"""
-                                <!DOCTYPE html>
-                                <html>
-                                <head>
-                                    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-                                    <style>
-                                        body {{ margin: 0; padding: 0; background: #131722; }}
-                                        #chart {{ width: 100%; height: 400px; }}
-                                    </style>
-                                </head>
-                                <body>
-                                    <div id="chart"></div>
-                                    <script>
-                                        const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
-                                            width: document.getElementById('chart').clientWidth,
-                                            height: 400,
-                                            layout: {{
-                                                background: {{ color: '#131722' }},
-                                                textColor: '#d1d4dc',
-                                            }},
-                                            grid: {{
-                                                vertLines: {{ color: '#1e222d' }},
-                                                horzLines: {{ color: '#1e222d' }},
-                                            }},
-                                            crosshair: {{
-                                                mode: LightweightCharts.CrosshairMode.Normal,
-                                            }},
-                                            rightPriceScale: {{
-                                                borderColor: '#2b2b43',
-                                            }},
-                                            timeScale: {{
-                                                borderColor: '#2b2b43',
-                                                timeVisible: true,
-                                                secondsVisible: false,
-                                            }},
-                                        }});
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {{ margin: 0; padding: 0; background: #131722; }}
+        #chart {{ width: 100%; height: 400px; }}
+        #error {{ color: red; padding: 10px; }}
+    </style>
+</head>
+<body>
+    <div id="error"></div>
+    <div id="chart"></div>
+    <script>
+        try {{
+            // Check if library loaded
+            if (typeof LightweightCharts === 'undefined') {{
+                throw new Error('LightweightCharts library failed to load');
+            }}
+            
+            const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
+                width: document.getElementById('chart').clientWidth,
+                height: 400,
+                layout: {{
+                    background: {{ color: '#131722' }},
+                    textColor: '#d1d4dc',
+                }},
+                grid: {{
+                    vertLines: {{ color: '#1e222d' }},
+                    horzLines: {{ color: '#1e222d' }},
+                }},
+                crosshair: {{
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                }},
+                rightPriceScale: {{
+                    borderColor: '#2b2b43',
+                }},
+                timeScale: {{
+                    borderColor: '#2b2b43',
+                    timeVisible: true,
+                    secondsVisible: false,
+                }},
+            }});
 
-                                        const candlestickSeries = chart.addCandlestickSeries({{
-                                            upColor: '#26a69a',
-                                            downColor: '#ef5350',
-                                            borderVisible: false,
-                                            wickUpColor: '#26a69a',
-                                            wickDownColor: '#ef5350',
-                                        }});
+            const candlestickSeries = chart.addCandlestickSeries({{
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            }});
 
-                                        // Set candle data
-                                        const candles = {candles_json};
-                                        candlestickSeries.setData(candles);
+            // Set candle data
+            const candles = {candles_json};
+            candlestickSeries.setData(candles);
 
-                                        // Add entry marker
-                                        const markers = {markers_json};
-                                        candlestickSeries.setMarkers(markers);
+            // Add entry marker
+            const markers = {markers_json};
+            candlestickSeries.setMarkers(markers);
 
-                                        // Add price lines
-                                        // Original SL (if moved)
-                                        {f'''
-                                        const slOriginal = candlestickSeries.createPriceLine({{
-                                            price: {initial_sl},
-                                            color: '#ef5350',
-                                            lineWidth: 1,
-                                            lineStyle: LightweightCharts.LineStyle.Dashed,
-                                            axisLabelVisible: true,
-                                            title: 'SL1 (Orig)',
-                                        }});
-                                        ''' if sl_moved else ''}
+            // Add price lines
+            {f'''const slOriginal = candlestickSeries.createPriceLine({{
+                price: {initial_sl},
+                color: '#ef5350',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: 'SL1',
+            }});''' if sl_moved else ''}
 
-                                        // Current SL
-                                        const slCurrent = candlestickSeries.createPriceLine({{
-                                            price: {current_sl},
-                                            color: '#f44336',
-                                            lineWidth: 2,
-                                            lineStyle: LightweightCharts.LineStyle.Solid,
-                                            axisLabelVisible: true,
-                                            title: 'SL',
-                                        }});
+            const slCurrent = candlestickSeries.createPriceLine({{
+                price: {current_sl},
+                color: '#f44336',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: 'SL',
+            }});
 
-                                        // Entry line
-                                        const entryLine = candlestickSeries.createPriceLine({{
-                                            price: {entry_price},
-                                            color: '#2196f3',
-                                            lineWidth: 2,
-                                            lineStyle: LightweightCharts.LineStyle.Solid,
-                                            axisLabelVisible: true,
-                                            title: 'Entry',
-                                        }});
+            const entryLine = candlestickSeries.createPriceLine({{
+                price: {entry_price},
+                color: '#2196f3',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: 'Entry',
+            }});
 
-                                        // Take Profit
-                                        const tpLine = candlestickSeries.createPriceLine({{
-                                            price: {tp_price},
-                                            color: '#4caf50',
-                                            lineWidth: 2,
-                                            lineStyle: LightweightCharts.LineStyle.Solid,
-                                            axisLabelVisible: true,
-                                            title: 'TP',
-                                        }});
+            const tpLine = candlestickSeries.createPriceLine({{
+                price: {tp_price},
+                color: '#4caf50',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: 'TP',
+            }});
 
-                                        // Current Price (dynamic)
-                                        const currentPrice = candlestickSeries.createPriceLine({{
-                                            price: {current_price_val},
-                                            color: '#ffd700',
-                                            lineWidth: 2,
-                                            lineStyle: LightweightCharts.LineStyle.Dotted,
-                                            axisLabelVisible: true,
-                                            title: 'Now: ${current_price_val:.4f}',
-                                        }});
+            const currentPrice = candlestickSeries.createPriceLine({{
+                price: {current_price_val},
+                color: '#ffd700',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dotted,
+                axisLabelVisible: true,
+                title: 'Now',
+            }});
 
-                                        // Auto-resize
-                                        window.addEventListener('resize', () => {{
-                                            chart.applyOptions({{ width: document.getElementById('chart').clientWidth }});
-                                        }});
+            // Auto-resize
+            window.addEventListener('resize', () => {{
+                chart.applyOptions({{ width: document.getElementById('chart').clientWidth }});
+            }});
 
-                                        // Fit content
-                                        chart.timeScale().fitContent();
-                                    </script>
-                                </body>
-                                </html>
-                                """
+            // Fit content
+            chart.timeScale().fitContent();
+        }} catch (error) {{
+            document.getElementById('error').innerHTML = 'Chart Error: ' + error.message;
+            console.error('Chart initialization error:', error);
+        }}
+    </script>
+</body>
+</html>
+"""
                                 
                                 # Render the chart
-                                components.html(chart_html, height=420)
+                                components.html(chart_html, height=450)
                             else:
                                 st.warning("Could not load chart data from Binance")
                                 
                         except Exception as e:
                             st.error(f"Chart error: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
                         
                         st.divider()
                         st.markdown(f"<p style='font-size:12px;'><b>Entry Time (UTC-6):</b> {pos.get('entry_time', 'N/A')}</p>", unsafe_allow_html=True)

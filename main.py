@@ -603,21 +603,45 @@ def process_pair(symbol, btc_context_str, global_sentiment):
         pos['current_price'] = real_price
         pos['last_update'] = str(df_micro.iloc[-1]['timestamp']) # Keep candle timestamp
         
-        # --- TRAILING STOP LOGIC (SIMPLIFIED / ROBUST) ---
+        # --- TRAILING STOP LOGIC (PROGRESSIVE / SMART) ---
         atr = df_micro.iloc[-1].get('ATR_14', 0)
         
-        # Hard Floor Logic: 0.2% minimum distance to allow breathing room
-        min_dist = entry_price * 0.002
+        # === NEW: PROGRESSIVE TRAILING DISTANCE ===
+        # Calculate current profit percentage
+        if pos_type == "LONG":
+            profit_pct = (real_price - entry_price) / entry_price * 100
+        else:  # SHORT
+            profit_pct = (entry_price - real_price) / entry_price * 100
         
-        # Simplified Calculation: Just ATR * 1.5
-        # No more "Volatility Factors" or "Buffers" that block movement
-        atr_dist = 1.5 * atr if atr > 0 else 0
+        # Trailing distance tightens as profit grows (gives eyes to the bot)
+        # At 0% profit: 1.5x ATR (loose, room to breathe)
+        # At 0.5% profit: 1.0x ATR (starting to protect)
+        # At 1.0%+ profit: 0.5x ATR (tight, lock in gains)
+        if profit_pct >= 1.0:
+            atr_mult = 0.5  # Tight trailing at high profit
+            logger.info(f"PROFIT {profit_pct:.2f}% - Using TIGHT trailing (0.5x ATR)")
+        elif profit_pct >= 0.5:
+            atr_mult = 0.75  # Medium trailing
+            logger.info(f"PROFIT {profit_pct:.2f}% - Using MEDIUM trailing (0.75x ATR)")
+        elif profit_pct >= 0.2:
+            atr_mult = 1.0  # Standard trailing
+            logger.info(f"PROFIT {profit_pct:.2f}% - Using STANDARD trailing (1.0x ATR)")
+        else:
+            atr_mult = 1.5  # Loose trailing (allow room to develop)
+        
+        # Hard Floor Logic: 0.15% minimum distance (reduced from 0.2%)
+        min_dist = entry_price * 0.0015
+        
+        atr_dist = atr_mult * atr if atr > 0 else 0
         
         final_dist = max(atr_dist, min_dist)
+
         
         if atr > 0:
-            # 1. Break Even Check (If profit > 1x ATR, OR > 50% of TP)
-            be_trigger = min(atr, tp_dist * 0.5) if tp_dist != float('inf') else atr
+            # 1. Break Even Check - NOW TRIGGERS EARLIER
+            # At 0.3% profit OR 1x ATR, whichever is smaller
+            be_trigger_pct = entry_price * 0.003  # 0.3% profit
+            be_trigger = min(atr, be_trigger_pct, tp_dist * 0.3) if tp_dist != float('inf') else min(atr, be_trigger_pct)
             
             if pos_type == "LONG":
                 # Use real_price for triggering
@@ -630,9 +654,13 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                 # 2. Trailing (If price moves up, drag SL at final_dist)
                 new_sl = real_price - final_dist
                 if new_sl > current_sl:
-                    logger.info(f"Trailing SL Up for {symbol} to {new_sl:.2f} (Dist: {final_dist:.4f})")
+                    old_sl = current_sl
+                    logger.info(f"📈 Trailing SL Up for {symbol}: {old_sl:.4f} → {new_sl:.4f} (Dist: {final_dist:.4f})")
                     pos['stop_loss'] = new_sl
                     current_sl = new_sl
+                    # Notify on significant moves (every 0.1% or more)
+                    if (new_sl - old_sl) / entry_price > 0.001:
+                        tools.send_telegram_message(f"📈 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
                     
                 # 3. STOP HIT CHECK
                 if real_price <= current_sl: # Check Live Price vs SL
@@ -640,6 +668,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     # GUARANTEED STOP EMULATION: Exit at SL Price (Limit Stop Simulator)
                     current_price = current_sl 
                     reason = "TRAILING STOP HIT (LIVE)"
+
                 
                 # 4. TAKE PROFIT CHECK
                 take_profit = float(pos.get('take_profit', 0) or 0)
@@ -667,14 +696,14 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     
             elif pos_type == "SHORT":
                 # 1. BREAK EVEN (Move SL to Entry when profit reaches threshold)
-                # Use be_trigger (Dynamic 50% TP or ATR) instead of fixed ATR
+                # Now uses the same be_trigger calculated above (0.3% or ATR, whichever smaller)
                 if real_price < (entry_price - be_trigger) and current_sl > entry_price:
                     logger.info(f"Moving SL to Break Even for {symbol}")
                     pos['stop_loss'] = entry_price
                     current_sl = entry_price
                     tools.send_telegram_message(f"🛡️ **BREAK EVEN** {symbol}\nStop moved to Entry: {entry_price}")
 
-                # 2. Trailing (Drag SL DOWN following price, but NEVER below entry unless in BE mode)
+                # 2. Trailing (Drag SL DOWN following price)
                 new_sl = real_price + final_dist
                 
                 # CRITICAL: For SHORT, SL should only trail down if:
@@ -684,12 +713,15 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     # Safety: Don't trail below entry unless we're already in BE mode
                     if current_sl > entry_price and new_sl < entry_price:
                         # Don't trail past entry, stay at entry for now
-                        # (BE logic above will handle moving to entry when profit threshold is hit)
                         logger.info(f"Trailing SL would go below entry ({new_sl:.2f} < {entry_price:.2f}), holding at current {current_sl:.2f}")
                     else:
-                        logger.info(f"Trailing SL Down for {symbol} to {new_sl:.2f} (Dist: {final_dist:.4f})")
+                        old_sl = current_sl
+                        logger.info(f"📉 Trailing SL Down for {symbol}: {old_sl:.4f} → {new_sl:.4f} (Dist: {final_dist:.4f})")
                         pos['stop_loss'] = new_sl
                         current_sl = new_sl
+                        # Notify on significant moves (every 0.1% or more)
+                        if (old_sl - new_sl) / entry_price > 0.001:
+                            tools.send_telegram_message(f"📉 **TRAILING** {symbol}\nSL moved: ${old_sl:.4f} → ${new_sl:.4f}\nLocking {profit_pct:.2f}% profit")
                     
                 # 3. STOP HIT CHECK
                 if real_price >= current_sl: # Check Live Price vs SL
@@ -697,6 +729,7 @@ def process_pair(symbol, btc_context_str, global_sentiment):
                     # GUARANTEED STOP EMULATION: Exit at SL Price
                     current_price = current_sl
                     reason = "TRAILING STOP HIT (LIVE)"
+
 
                 # 4. TAKE PROFIT CHECK
                 take_profit_val = pos.get('take_profit', 0)
